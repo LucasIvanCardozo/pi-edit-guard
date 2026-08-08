@@ -9,7 +9,7 @@ Fixes the most common LLM failure mode in code editing: the model counts spaces 
 ## Install
 
 ```bash
-pi install npm:pi-edit-guard
+pi install npm:@lucascardozo/pi-edit-guard
 ```
 
 ## What it does
