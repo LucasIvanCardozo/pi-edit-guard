@@ -139,14 +139,13 @@ function formatCandidate(
   lines: string[],
   kind: CandidateKind,
 ): string {
-  const endLine = startLine + lines.length - 1;
-
-  const header = `Error: Most similar block to edit at lines ${startLine}-${endLine}.\n`;
-
-  const subheader =
+  const reason =
     kind === "indentation"
-      ? "Your oldText had wrong indentation. Use this block as your new oldText:\n"
-      : "Your oldText had a small difference from the file. The closest matching block is:\n";
+      ? "Your oldText had wrong indentation"
+      : "Your oldText had a small difference from the file";
+
+  const header = `Error: Edit failed. ${reason}.\n`;
+  const subheader = "Use this block as your new oldText:\n";
 
   const labels = lines.map(describeIndent);
   const hasSpaces = labels.some((l) => l.includes("sp"));
@@ -163,14 +162,14 @@ function formatCandidate(
 
 function formatMultipleMatches(count: number, threshold: number): string {
   return (
-    `Found ${count} similar blocks above threshold ${threshold.toFixed(2)}.\n` +
+    `Found ${count} similar blocks.\n` +
     `Re-read the file and provide a more specific oldText that uniquely identifies the target block.`
   );
 }
 
-function formatNoMatch(bestSimilarity: number, threshold: number): string {
+function formatNoMatch(_bestSimilarity: number, _threshold: number): string {
   return (
-    `No sufficiently similar block found (best match: ${bestSimilarity.toFixed(2)}, below threshold ${threshold.toFixed(2)}).\n` +
+    `No sufficiently similar block found.\n` +
     `Re-read the file to see its current contents before retrying.`
   );
 }

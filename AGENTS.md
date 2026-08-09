@@ -102,8 +102,8 @@ We also set `isError: false` so renderers like `quiet-tools` collapse the output
 The block is wrapped in a Markdown fenced code block so the model can copy it verbatim as its new `oldText`. The block itself has no annotation prefixes — the indentation shown is the file's actual indentation.
 
 ```
-Error: Most similar block to edit at lines 43-49.
-Your oldText had wrong indentation. Use this block as your new oldText:
+Error: Edit failed. Your oldText had wrong indentation.
+Use this block as your new oldText:
 
 ```
         if (item % 2 === 0) {
@@ -125,10 +125,10 @@ Use this block as your new oldText in your next edit call.
 The legend only appears when the block has both spaces and tabs in different lines:
 
 ```
-Error: Most similar block to edit at lines 43-49.
+Error: Edit failed. Your oldText had wrong indentation.
 sp = spaces, tb = tabs
 
-Your oldText had wrong indentation. Use this block as your new oldText:
+Use this block as your new oldText:
 
 ```
 ...
@@ -141,12 +141,12 @@ Use this block as your new oldText in your next edit call.
 
 - **DON'T** include `Edit failed: oldText not found in /path` — path is already in the tool header, "oldText not found" is implied by the rest
 - **DON'T** include `Retry using this exact text as oldText, preserving the indentation shown` — too verbose, the model knows what to do
-- **DO** start directly with the actionable info (`Error: Most similar block at...`, `Found N similar blocks...`, `No sufficiently similar block...`)
+- **DO** start directly with the actionable info (`Error: Edit failed. ...`, `Found N similar blocks.`, `No sufficiently similar block found.`)
 - End candidate messages with `Use this block as your new oldText in your next edit call.`
 - The block is shown as a fenced code block (no `sp`/`tb` prefixes per line) so the model can copy it verbatim.
-- The sub-header distinguishes two cases:
+- The header distinguishes two cases:
   - `Your oldText had wrong indentation.` (normalized match: pure indentation drift)
-  - `Your oldText had a small difference from the file. The closest matching block is:` (fuzzy match: typos, small character differences)
+  - `Your oldText had a small difference from the file.` (fuzzy match: typos, small character differences)
 
 ## Configuration
 
@@ -186,7 +186,7 @@ EOF
 # Test 1: indent drift → should suggest with real indent
 # Test 2: fuzzy typo (1 char) → should suggest with similarity ~0.95+
 # Test 3: ambiguous (same block twice) → "Found N similar blocks"
-# Test 4: no match → "best match: 0.XX, below threshold"
+# Test 4: no match → "No sufficiently similar block found"
 # Test 5: hook blocks on > 1 literal occurrences (tool_call layer)
 ```
 
