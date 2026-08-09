@@ -97,31 +97,56 @@ We also set `isError: false` so renderers like `quiet-tools` collapse the output
 
 ## Conventions
 
-### Compact message format (minimize tokens)
+### Candidate message format (fenced code block, copy-pasteable)
+
+The block is wrapped in a Markdown fenced code block so the model can copy it verbatim as its new `oldText`. The block itself has no annotation prefixes — the indentation shown is the file's actual indentation.
 
 ```
-Error: Most similar block to edit at lines 43-49:
-  8sp    L45           if (item % 2 === 0) {
-  10sp   L46             return acc + item * 2;
-  8sp    L47           } else {
-  10sp   L48             return acc + item;
-  8sp    L49           }
+Error: Most similar block to edit at lines 43-49.
+Your oldText had wrong indentation. Use this block as your new oldText:
 
-Use this block as your new oldText.
+```
+        if (item % 2 === 0) {
+          return acc + item * 2;
+        } else {
+          return acc + item;
+        }
 ```
 
-Indent descriptors:
+Use this block as your new oldText in your next edit call.
+```
+
+**Indent descriptors** (used internally for the `sp = spaces, tb = tabs` legend when the block has mixed indentation):
 - `4sp` → 4 spaces
 - `2tb` → 2 tabs
 - `2sp+1tb` → mixed
 - `-` → no indent
+
+The legend only appears when the block has both spaces and tabs in different lines:
+
+```
+Error: Most similar block to edit at lines 43-49.
+sp = spaces, tb = tabs
+
+Your oldText had wrong indentation. Use this block as your new oldText:
+
+```
+...
+```
+
+Use this block as your new oldText in your next edit call.
+```
 
 ### Message rules (no redundancies)
 
 - **DON'T** include `Edit failed: oldText not found in /path` — path is already in the tool header, "oldText not found" is implied by the rest
 - **DON'T** include `Retry using this exact text as oldText, preserving the indentation shown` — too verbose, the model knows what to do
 - **DO** start directly with the actionable info (`Error: Most similar block at...`, `Found N similar blocks...`, `No sufficiently similar block...`)
-- End candidate messages with `Use this block as your new oldText.`
+- End candidate messages with `Use this block as your new oldText in your next edit call.`
+- The block is shown as a fenced code block (no `sp`/`tb` prefixes per line) so the model can copy it verbatim.
+- The sub-header distinguishes two cases:
+  - `Your oldText had wrong indentation.` (normalized match: pure indentation drift)
+  - `Your oldText had a small difference from the file. The closest matching block is:` (fuzzy match: typos, small character differences)
 
 ## Configuration
 

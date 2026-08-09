@@ -132,27 +132,33 @@ function mutateToolResult(
 // Response formatting (compact, no redundancies)
 // ──────────────────────────────────────────────────────────────────────────
 
+type CandidateKind = "indentation" | "fuzzy";
+
 function formatCandidate(
   startLine: number,
   lines: string[],
-  similarity: number,
+  kind: CandidateKind,
 ): string {
-  const labels = lines.map(describeIndent);
-  const maxLabelWidth = Math.max(...labels.map((l) => l.length), 0);
   const endLine = startLine + lines.length - 1;
 
-  const header =
-    `Error: Most similar block to edit at lines ${startLine}-${endLine}:\n`;
+  const header = `Error: Most similar block to edit at lines ${startLine}-${endLine}.\n`;
 
-  const body = lines
-    .map((line, i) => {
-      const label = padRight(labels[i], maxLabelWidth);
-      const ln = startLine + i;
-      return `  ${label}   L${ln}   ${line}`;
-    })
-    .join("\n");
+  const subheader =
+    kind === "indentation"
+      ? "Your oldText had wrong indentation. Use this block as your new oldText:\n"
+      : "Your oldText had a small difference from the file. The closest matching block is:\n";
 
-  return `${header}${body}\n\nUse this block as your new oldText.`;
+  const labels = lines.map(describeIndent);
+  const hasSpaces = labels.some((l) => l.includes("sp"));
+  const hasTabs = labels.some((l) => l.includes("tb"));
+  const legend =
+    hasSpaces && hasTabs ? "sp = spaces, tb = tabs\n" : "";
+
+  const body = "```\n" + lines.join("\n") + "\n```";
+
+  const footer = "Use this block as your new oldText in your next edit call.";
+
+  return `${header}${legend ? legend + "\n" : ""}${subheader}\n${body}\n\n${footer}`;
 }
 
 function formatMultipleMatches(count: number, threshold: number): string {
@@ -332,7 +338,7 @@ export default function (pi: ExtensionAPI) {
           const m = normalizedMatches[0];
           return {
             block: true,
-            reason: formatCandidate(m.startLine, m.matchedLines, 1.0),
+            reason: formatCandidate(m.startLine, m.matchedLines, "indentation"),
           };
         }
 
@@ -387,7 +393,7 @@ export default function (pi: ExtensionAPI) {
 
     if (normalizedMatches.length === 1) {
       const m = normalizedMatches[0];
-      mutateToolResult(event, formatCandidate(m.startLine, m.matchedLines, 1.0), false);
+      mutateToolResult(event, formatCandidate(m.startLine, m.matchedLines, "indentation"), false);
       return undefined;
     }
 
@@ -405,7 +411,7 @@ export default function (pi: ExtensionAPI) {
 
     if (fuzzyMatches.length === 1) {
       const m = fuzzyMatches[0];
-      mutateToolResult(event, formatCandidate(m.startLine, m.matchedLines, m.similarity), false);
+      mutateToolResult(event, formatCandidate(m.startLine, m.matchedLines, "fuzzy"), false);
       return undefined;
     }
 
