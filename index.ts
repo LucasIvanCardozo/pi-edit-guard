@@ -135,7 +135,7 @@ function mutateToolResult(
 type CandidateKind = "indentation" | "fuzzy";
 
 function formatCandidate(
-  startLine: number,
+  _startLine: number,
   lines: string[],
   kind: CandidateKind,
 ): string {
@@ -145,7 +145,7 @@ function formatCandidate(
       : "Your oldText had a small difference from the file";
 
   const header = `Error: Edit failed. ${reason}.\n`;
-  const subheader = "Use this block as your new oldText:\n";
+  const instruction = "Use this block as your new oldText in your next edit call:\n";
 
   const labels = lines.map(describeIndent);
   const hasSpaces = labels.some((l) => l.includes("sp"));
@@ -155,9 +155,7 @@ function formatCandidate(
 
   const body = "```\n" + lines.join("\n") + "\n```";
 
-  const footer = "Use this block as your new oldText in your next edit call.";
-
-  return `${header}${legend ? legend + "\n" : ""}${subheader}\n${body}\n\n${footer}`;
+  return `${header}${legend ? legend + "\n" : ""}${instruction}\n${body}`;
 }
 
 function formatMultipleMatches(count: number, threshold: number): string {

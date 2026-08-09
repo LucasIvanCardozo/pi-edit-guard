@@ -103,7 +103,7 @@ The block is wrapped in a Markdown fenced code block so the model can copy it ve
 
 ```
 Error: Edit failed. Your oldText had wrong indentation.
-Use this block as your new oldText:
+Use this block as your new oldText in your next edit call:
 
 ```
         if (item % 2 === 0) {
@@ -112,8 +112,6 @@ Use this block as your new oldText:
           return acc + item;
         }
 ```
-
-Use this block as your new oldText in your next edit call.
 ```
 
 **Indent descriptors** (used internally for the `sp = spaces, tb = tabs` legend when the block has mixed indentation):
@@ -128,13 +126,11 @@ The legend only appears when the block has both spaces and tabs in different lin
 Error: Edit failed. Your oldText had wrong indentation.
 sp = spaces, tb = tabs
 
-Use this block as your new oldText:
+Use this block as your new oldText in your next edit call:
 
 ```
 ...
 ```
-
-Use this block as your new oldText in your next edit call.
 ```
 
 ### Message rules (no redundancies)
@@ -142,7 +138,7 @@ Use this block as your new oldText in your next edit call.
 - **DON'T** include `Edit failed: oldText not found in /path` — path is already in the tool header, "oldText not found" is implied by the rest
 - **DON'T** include `Retry using this exact text as oldText, preserving the indentation shown` — too verbose, the model knows what to do
 - **DO** start directly with the actionable info (`Error: Edit failed. ...`, `Found N similar blocks.`, `No sufficiently similar block found.`)
-- End candidate messages with `Use this block as your new oldText in your next edit call.`
+- The instruction line `Use this block as your new oldText in your next edit call:` appears ONCE, right before the block.
 - The block is shown as a fenced code block (no `sp`/`tb` prefixes per line) so the model can copy it verbatim.
 - The header distinguishes two cases:
   - `Your oldText had wrong indentation.` (normalized match: pure indentation drift)
