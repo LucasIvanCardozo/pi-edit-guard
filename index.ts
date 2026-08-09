@@ -5,13 +5,18 @@
  * common LLM failure mode in code editing: indentation drift.
  *
  * Layer 1 (tool_call): intercepts BEFORE native edit runs. Blocks with our
- * message when oldText appears literally > 1 times in the file (uniqueness
- * check that native edit does internally and aborts with its own message).
+ * message when:
+ *   - oldText appears literally > 1 times in the file (uniqueness check
+ *     that native edit does internally and aborts with its own message), OR
+ *   - oldText has 0 literal occurrences but exactly 1 normalized match
+ *     (unambiguous indentation drift). This proactively returns the
+ *     correctly-indented block before the native edit fails, so the model
+ *     gets a clear actionable error instead of looping.
  *
- * Layer 2 (tool_result): catches native edit failures (exact match not found).
- * When the failure is due to indentation drift, finds the most probable target
- * block and returns it with explicit indentation annotations so the model can
- * retry with correct formatting.
+ * Layer 2 (tool_result): catches native edit failures (exact match not found)
+ * that escape Layer 1 (e.g., 0 literal + 0 normalized matches, then native
+ * fuzzy failure). Runs the same normalized/exact + fuzzy cascade as a
+ * fallback to enrich the error with the most probable target block.
  *
  * The extension NEVER writes to the file. It only enriches error messages
  * (and blocks ambiguous cases at the tool_call layer). It also mutates
@@ -137,7 +142,7 @@ function formatCandidate(
   const endLine = startLine + lines.length - 1;
 
   const header =
-    `Most similar block at lines ${startLine}-${endLine} (similarity ${similarity.toFixed(2)}):\n`;
+    `Error: Most similar block to edit at lines ${startLine}-${endLine}:\n`;
 
   const body = lines
     .map((line, i) => {
@@ -147,7 +152,7 @@ function formatCandidate(
     })
     .join("\n");
 
-  return `${header}${body}\n\nUse as oldText.`;
+  return `${header}${body}\n\nUse this block as your new oldText.`;
 }
 
 function formatMultipleMatches(count: number, threshold: number): string {
@@ -273,7 +278,10 @@ function findFuzzyMatches(
 // ──────────────────────────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
-  // Layer 1: intercept BEFORE native edit runs. Block ambiguous exact matches.
+  // Layer 1: intercept BEFORE native edit runs. Block ambiguous matches and
+  // unambiguously-failing indentation mismatches so the model gets a clear
+  // error message at the moment of the failed call, not after the native
+  // edit returns its own (less informative) failure.
   pi.on("tool_call", async (event) => {
     if (event.toolName !== GUARDED_TOOL) return;
 
@@ -293,6 +301,8 @@ export default function (pi: ExtensionAPI) {
       return; // Dejar pasar al nativo (preserva su error de file not found, etc.)
     }
 
+    if (content.length > MAX_FILE_SIZE) return;
+
     // Cuenta literal (substring match, igual que el edit nativo)
     const occurrences = content.split(oldText).length - 1;
 
@@ -304,9 +314,39 @@ export default function (pi: ExtensionAPI) {
       };
     }
 
-    // 0 ocurrencias (el nativo fallará con "not found", guard en tool_result se encarga)
-    // 1 ocurrencia (único, el nativo funciona perfecto)
-    // → dejar pasar al nativo
+    if (occurrences === 0) {
+      // 0 ocurrencias literales: chequear si es un drift de indentación
+      // (match normalized exacto). Si lo es, bloquear proactivamente con
+      // el bloque correcto para que el modelo no quede en loop esperando
+      // el error del native edit.
+      const normalizedFileContent = content.replace(/\r\n/g, "\n");
+      const normalizedOldText = normalizeText(oldText.replace(/\r\n/g, "\n"));
+
+      if (normalizedOldText.length > 0) {
+        const normalizedMatches = findNormalizedMatches(
+          normalizedFileContent,
+          normalizedOldText,
+        );
+
+        if (normalizedMatches.length === 1) {
+          const m = normalizedMatches[0];
+          return {
+            block: true,
+            reason: formatCandidate(m.startLine, m.matchedLines, 1.0),
+          };
+        }
+
+        if (normalizedMatches.length > 1) {
+          return {
+            block: true,
+            reason: formatMultipleMatches(normalizedMatches.length, 1.0),
+          };
+        }
+      }
+    }
+
+    // 1 ocurrencia literal (único, el nativo funciona perfecto)
+    // 0 ocurrencias sin match normalized (deja pasar al nativo, tool_result se encarga)
   });
 
   // Layer 2: catch native edit failures and offer the most probable target
