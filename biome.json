@@ -1,0 +1,101 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.7/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "includes": ["**", "!node_modules"]
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": false,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineEnding": "lf",
+    "lineWidth": 100,
+    "attributePosition": "auto",
+    "bracketSameLine": false,
+    "bracketSpacing": true,
+    "expand": "auto",
+    "useEditorconfig": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "complexity": {
+        "noArguments": "error",
+        "noUselessTypeConstraint": "error"
+      },
+      "correctness": {
+        "noChildrenProp": "error",
+        "noUnusedVariables": "error",
+        "useExhaustiveDependencies": "warn"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "warn",
+        "noDangerouslySetInnerHtmlWithChildren": "error"
+      },
+      "style": {
+        "noCommonJs": "error",
+        "noNamespace": "error",
+        "noNonNullAssertion": "warn",
+        "useArrayLiterals": "error",
+        "useAsConstAssertion": "error",
+        "useConst": "error",
+        "useSpreadOverApply": "error"
+      },
+      "suspicious": {
+        "noCommentText": "error",
+        "noMisleadingInstantiator": "error",
+        "noNonNullAssertedOptionalChain": "error",
+        "noUnsafeDeclarationMerging": "error",
+        "noVar": "error",
+        "useNamespaceKeyword": "error"
+      }
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "arrowParentheses": "always",
+      "attributePosition": "auto",
+      "bracketSameLine": false,
+      "bracketSpacing": true,
+      "jsxQuoteStyle": "double",
+      "quoteProperties": "asNeeded",
+      "quoteStyle": "single",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    },
+    "globals": []
+  },
+  "overrides": [
+    {
+      "includes": ["src/format/**"],
+      "linter": {
+        "rules": {
+          "style": { "useTemplate": "off" }
+        }
+      }
+    },
+    {
+      "includes": ["tests/**"],
+      "linter": {
+        "rules": {
+          "correctness": { "noUnusedImports": "off", "noUnusedVariables": "off" },
+          "style": { "useConst": "off", "noNonNullAssertion": "off" },
+          "suspicious": { "noExplicitAny": "off" }
+        }
+      }
+    }
+  ],
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": { "organizeImports": "on" }
+    }
+  }
+}
