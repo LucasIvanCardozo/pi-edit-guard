@@ -27,11 +27,12 @@ export function evaluateEdit(
   maxExamples: number,
 ): EditEvaluation {
   const normalizedFileContent = fileContent.replace(/\r\n/g, '\n');
-  const normalizedOldText = normalizeText(oldText.replace(/\r\n/g, '\n'));
+  const oldTextLf = oldText.replace(/\r\n/g, '\n');
+  const normalizedOldText = normalizeText(oldTextLf);
 
   // Step 1: literal line-anchored count. Use the same scan that produces
   // block excerpts so the >1 case doesn't re-scan the file.
-  const literal = findLineAnchoredMatches(normalizedFileContent, oldText);
+  const literal = findLineAnchoredMatches(normalizedFileContent, oldTextLf);
 
   if (literal.matches.length === 1) {
     return { kind: 'ok-literal' };

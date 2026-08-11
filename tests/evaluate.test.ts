@@ -102,4 +102,15 @@ export function run(): void {
     const evals = evaluateBatch(file, [{ oldText: '  return 1;' }], THRESHOLD, MAX_EXAMPLES);
     assertEq(evals[0].kind, 'unique-drift', 'CRLF normalized before match');
   }
+
+  section('evaluate: CRLF in oldText matches LF in file');
+  {
+    // Regression: oldText coming from a Windows-style editor has CRLF. The
+    // file is LF. Without line-ending normalization on the oldText side, the
+    // literal match fails and the guard falsely reports 'wrong indentation'.
+    const file = 'function foo() {\n    return 1;\n}\n';
+    const oldTextCrlf = 'function foo() {\r\n    return 1;\r\n}\r\n';
+    const evals = evaluateBatch(file, [{ oldText: oldTextCrlf }], THRESHOLD, MAX_EXAMPLES);
+    assertEq(evals[0].kind, 'ok-literal', 'CRLF oldText matches LF file');
+  }
 }

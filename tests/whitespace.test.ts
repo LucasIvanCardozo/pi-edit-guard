@@ -19,7 +19,7 @@ export function run(): void {
   assertEq(describeIndent('    code'), '4sp', '4 spaces');
   assertEq(describeIndent('\t\tcode'), '2tb', '2 tabs');
   assertEq(describeIndent('  \tcode'), '2sp+1tb', 'mixed');
-  assertEq(describeIndent('code'), '-', 'no indent');
-  assertEq(describeIndent(''), '-', 'empty line');
+  assertEq(describeIndent('code'), '0sp', 'no indent');
+  assertEq(describeIndent(''), '0sp', 'empty line');
   assertEq(describeIndent('  '), '2sp', 'only whitespace');
 }

@@ -19,16 +19,20 @@ export function normalizeText(text: string): string {
  *   "    code" → "4sp"
  *   "\t\tcode" → "2tb"
  *   "  \tcode" → "2sp+1tb"
- *   "code"     → "-"
+ *   "code"     → "0sp"
+ *
+ * Note: an empty string and an empty-indent line both return `"0sp"`. We use
+ * `"0sp"` rather than `"-"` so the model sees a consistent `[Xsp]` /
+ * `[Xtb]` marker format and never needs to learn a special-case symbol.
  */
 export function describeIndent(line: string): string {
   const match = line.match(/^([ \t]+)/);
-  if (!match) return '-';
+  if (!match) return '0sp';
   const indent = match[1];
   const spaces = (indent.match(/ /g) || []).length;
   const tabs = (indent.match(/\t/g) || []).length;
   if (spaces > 0 && tabs > 0) return `${spaces}sp+${tabs}tb`;
   if (spaces > 0) return `${spaces}sp`;
   if (tabs > 0) return `${tabs}tb`;
-  return '-';
+  return '0sp';
 }

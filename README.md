@@ -44,11 +44,15 @@ Both layers iterate over `input.edits[]`. If even one edit has an issue, the who
 ```
 Edit guard: 2 of 5 edits have issues.
 
-Edit 1: Error: Edit failed. Your oldText had wrong indentation.
-Use this block as your new oldText in your next edit call:
+Edit 1: Error: Edit failed. Indentation in your oldText didn't match the file.
+
+sp = spaces, tb = tabs.
+The `[Xsp]` / `[Xtb]` markers are descriptive metadata — strip them to get the file's original content.
+
+Lines 5-5. Use the lines below verbatim as your new oldText (after stripping the markers):
 
 ```
-    const b = 2;
+[4sp]     const b = 2;
 ```
 
 Edit 4: Found 6 similar blocks (similarity ≥ 0.90).
@@ -84,15 +88,19 @@ Other extensions (e.g. `gentle-pi`'s `quiet-tools`) register custom renderers th
 ### Single edit: drift recovery
 
 ```
-Error: Edit failed. Your oldText had wrong indentation.
-Use this block as your new oldText in your next edit call:
+Error: Edit failed. Indentation in your oldText didn't match the file.
+
+sp = spaces, tb = tabs.
+The `[Xsp]` / `[Xtb]` markers are descriptive metadata — strip them to get the file's original content.
+
+Lines 12-16. Use the lines below verbatim as your new oldText (after stripping the markers):
 
 ```
-    if (item % 2 === 0) {
-      return acc + item * 2;
-    } else {
-      return acc + item;
-    }
+[8sp]         if (item % 2 === 0) {
+[10sp]           return acc + item * 2;
+[8sp]         } else {
+[10sp]           return acc + item;
+[8sp]         }
 ```
 ```
 
@@ -135,12 +143,14 @@ When the best similarity is below the hint minimum (default 0.50), the closest b
 
 ### Indent descriptors
 
+Each line of a `unique-drift` candidate is prefixed with a `[Xsp]` / `[Xtb]` marker showing its leading-whitespace count. The marker is descriptive metadata, not part of the file's content — strip it to recover the actual line.
+
 - `4sp` → 4 spaces
 - `2tb` → 2 tabs
 - `2sp+1tb` → mixed
-- `-` → no indent
+- `0sp` → no leading whitespace
 
-The legend only appears when the block mixes spaces and tabs.
+The legend `sp = spaces, tb = tabs` is **always** visible for the indentation case so the model can interpret the markers without prior knowledge. This addresses the failure mode observed in `carta-qr` (2024) where the model assumed the bullets were indented at 2 spaces based on context, ignored the verbatim block we returned, and re-submitted the same wrong indentation twice before falling back to `read`+`grep`. The per-line marker makes the indent explicit per line even when the block has mixed indents (e.g. some lines `0sp`, others `4sp`).
 
 ## Configuration
 

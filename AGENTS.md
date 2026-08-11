@@ -13,7 +13,7 @@ Fixes the most common LLM failure mode in code editing: the model counts spaces 
 
 ## Status
 
-- **v0.6.0 in development** (architecture refactor + batch + examples + hint)
+- **v0.6.1 in development** (per-line indent markers + CRLF fix)
 - Install: `pi install npm:@lucascardozo/pi-edit-guard`
 - Repo: https://github.com/LucasIvanCardozo/pi-edit-guard
 - License: MIT
@@ -94,39 +94,34 @@ We also set `isError: false` so renderers like `quiet-tools` collapse the output
 
 ### Candidate message format (fenced code block, copy-pasteable)
 
-The block is wrapped in a Markdown fenced code block so the model can copy it verbatim as its new `oldText`. The block itself has no annotation prefixes — the indentation shown is the file's actual indentation.
+For the `unique-drift` case, the block is wrapped in a Markdown fenced code block. Each line is prefixed with a `[Xsp]` / `[Xtb]` marker showing its leading-whitespace count. The marker is **descriptive metadata, not part of the file's content** — strip it to recover the actual line. The legend `sp = spaces, tb = tabs` is always visible for the drift case so the model can interpret the markers without prior knowledge.
 
 ```
-Error: Edit failed. Your oldText had wrong indentation.
-Use this block as your new oldText in your next edit call:
+Error: Edit failed. Indentation in your oldText didn't match the file.
+
+sp = spaces, tb = tabs.
+The `[Xsp]` / `[Xtb]` markers are descriptive metadata — strip them to get the file's original content.
+
+Lines 12-16. Use the lines below verbatim as your new oldText (after stripping the markers):
 
 ```
-        if (item % 2 === 0) {
-          return acc + item * 2;
-        } else {
-          return acc + item;
-        }
+[8sp]         if (item % 2 === 0) {
+[10sp]           return acc + item * 2;
+[8sp]         } else {
+[10sp]           return acc + item;
+[8sp]         }
 ```
 ```
 
-**Indent descriptors** (used internally for the `sp = spaces, tb = tabs` legend when the block has mixed indentation):
+**Why per-line markers (instead of plain verbatim block):** addresses the failure mode observed in `carta-qr` (2024) where the model assumed the bullets were indented at 2 spaces based on context, ignored the verbatim block we returned, and re-submitted the same wrong indentation twice before falling back to `read`+`grep`. The per-line marker makes the indent explicit per line even when the block has mixed indents (e.g. some lines `0sp`, others `4sp`).
+
+**Indent descriptors**:
 - `4sp` → 4 spaces
 - `2tb` → 2 tabs
 - `2sp+1tb` → mixed
-- `-` → no indent
+- `0sp` → no leading whitespace
 
-The legend only appears when the block has both spaces and tabs in different lines:
-
-```
-Error: Edit failed. Your oldText had wrong indentation.
-sp = spaces, tb = tabs
-
-Use this block as your new oldText in your next edit call:
-
-```
-...
-```
-```
+The `0sp` form (rather than `-` for "no indent") keeps the marker format uniform: every line gets `[Xsp]` or `[Xtb]`. The model doesn't need to learn a special-case symbol.
 
 ### Message rules (no redundancies)
 
@@ -134,9 +129,9 @@ Use this block as your new oldText in your next edit call:
 - **DON'T** include `Retry using this exact text as oldText, preserving the indentation shown` — too verbose, the model knows what to do
 - **DO** start directly with the actionable info (`Error: Edit failed. ...`, `Found N similar blocks.`, `No sufficiently similar block found.`)
 - The instruction line `Use this block as your new oldText in your next edit call:` appears ONCE, right before the block.
-- The block is shown as a fenced code block (no `sp`/`tb` prefixes per line) so the model can copy it verbatim.
+- The block is shown as a fenced code block with `[Xsp]` / `[Xtb]` prefixes per line (drift case only). The model strips these markers to get the verbatim content. The fuzzy case keeps a plain verbatim block (no markers).
 - The header distinguishes two cases:
-  - `Your oldText had wrong indentation.` (normalized match: pure indentation drift)
+  - `Indentation in your oldText didn't match the file.` (normalized match: pure indentation drift)
   - `Your oldText had a small difference from the file.` (fuzzy match: typos, small character differences)
 
 ## Configuration

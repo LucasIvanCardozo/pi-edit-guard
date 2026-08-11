@@ -88,8 +88,8 @@ export async function run(): Promise<void> {
     const r = result as { block: boolean; reason: string };
     assert(r.block === true, 'blocks the call');
     assertMatch(r.reason, /Edit guard: 2 of 2 edits have issues/, 'consolidated header');
-    assertMatch(r.reason, /Edit 1:.*wrong indentation/s, 'edit 1 has drift');
-    assertMatch(r.reason, /Edit 2:.*wrong indentation/s, 'edit 2 has drift');
+    assertMatch(r.reason, /Edit 1:.*Indentation in your oldText didn't match/s, 'edit 1 has drift');
+    assertMatch(r.reason, /Edit 2:.*Indentation in your oldText didn't match/s, 'edit 2 has drift');
     assertMatch(r.reason, /let pusherClient: Pusher \| null = null/, "shows file's actual indent");
   }
 
