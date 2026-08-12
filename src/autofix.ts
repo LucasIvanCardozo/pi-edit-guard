@@ -11,6 +11,10 @@
  *   mistake — return null and let the existing path surface the error.
  * - Blank lines (whitespace-only lines) are ignored for delta computation and
  *   stay unchanged under shift. They don't carry semantic indent.
+ * - newText must be free of tabs in leading whitespace. Applying a spaces-only
+ *   shift to a line with leading tabs would write mixed-indent output back to
+ *   a spaces-only file. We decline so the existing block+report path surfaces
+ *   the error to the model instead of silently polluting the file.
  *
  * This module is pure: no I/O, no Pi imports. Trivial to unit-test.
  */
@@ -74,6 +78,14 @@ export function tryAutofix(edit: EditInput, block: BlockExcerpt): AutofixResult 
 
   // (2) Apply shift to newText per-line; blank lines stay as-is.
   const normalizedNewText = newText.replace(/\r\n/g, '\n');
+
+  // Decline if any line of newText has a tab in its leading whitespace.
+  // Applying a spaces-only delta to such a line would produce mixed-indent
+  // output (the shift inserts spaces but the tab remains), polluting the
+  // spaces-only file silently. Surfacing the error via the block+report path
+  // is safer than writing mixed indent.
+  if (normalizedNewText.split('\n').some(hasLeadingTab)) return null;
+
   const correctedNewText = normalizedNewText
     .split('\n')
     .map((line) => shiftLeadingSpaces(line, delta))
@@ -98,7 +110,8 @@ export function countLeadingSpaces(line: string): number {
 }
 
 export function hasLeadingTab(line: string): boolean {
-  return line.startsWith('\t');
+  const ws = line.match(/^[ \t]+/);
+  return ws !== null && ws[0].includes('\t');
 }
 
 export function shiftLeadingSpaces(line: string, delta: number): string {

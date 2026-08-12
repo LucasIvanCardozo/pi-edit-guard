@@ -300,6 +300,26 @@ async function main() {
     },
   });
 
+  // ───────────────────────────────────────────────────────────────────────
+  // Scenario 9: tab in newText's leading whitespace — declined
+  // ───────────────────────────────────────────────────────────────────────
+  await runScenario('Scenario 9: tab in newText leading whitespace (autofix declines)', {
+    fileContent: 'function foo() {\n    return 1;\n}\n',
+    edits: [
+      // oldText has 2sp, file has 4sp → would be unique-drift (autofix candidate).
+      // newText has a leading tab. Old fix silently wrote mixed-indent back to the
+      // spaces-only file. Now we decline and surface the error to the model.
+      { oldText: '  return 1;', newText: '\t  return 99;' },
+    ],
+    assertions: (event, result) => {
+      assertMatches(result, (r) => r && typeof r === 'object' && 'block' in r && r.block === true, 'returns block (autofix declined for tab in newText)');
+      const r = result as { reason: string };
+      assertMatches(r, (x) => /Indentation in your oldText didn't match/.test((x as { reason: string }).reason), 'reason shows indent-mismatch');
+      assertEq(event.input.edits[0].oldText, '  return 1;', 'oldText NOT mutated (declined)');
+      assertEq(event.input.edits[0].newText, '\t  return 99;', 'newText NOT mutated (declined)');
+    },
+  });
+
   console.log('\n' + '-'.repeat(60));
   console.log(`Results: ${passCount}/${testCount} passed`);
   if (passCount < testCount) {

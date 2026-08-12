@@ -13,7 +13,7 @@ Fixes the most common LLM failure mode in code editing: the model counts spaces 
 
 ## Status
 
-- **v0.7.1 in development** (atomic-block invariant + e2e test script)
+- **v0.7.2 in development** (decline autofix when newText has leading tabs)
 - Install: `pi install npm:@lucascardozo/pi-edit-guard`
 - Repo: https://github.com/LucasIvanCardozo/pi-edit-guard
 - License: MIT

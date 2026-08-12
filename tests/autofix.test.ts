@@ -238,4 +238,83 @@ export function run(): void {
       );
     }
   }
+
+  section('autofix: tryAutofix declines when newText has leading tab (file pollution guard)');
+  {
+    // Regression for the bug caught by /tmp/peg-test-1: shifting newText
+    // with leading tab would write mixed-indent (spaces + tab) back to a
+    // spaces-only file. The guard now declines and falls through to the
+    // existing block+report path.
+    const result = tryAutofix(
+      {
+        oldText: '  return 1;',
+        newText: '\t  return 99;',
+      },
+      { startLine: 2, lines: ['    return 1;'] },
+    );
+    assertEq(result, null, 'returns null when newText has leading tab');
+  }
+
+  section('autofix: tryAutofix declines when newText mixes tab and spaces in leading');
+  {
+    // Even when some lines have correct spaces-only indent, the presence
+    // of any tab in any line's leading whitespace forces decline to
+    // prevent the file from being polluted.
+    const result = tryAutofix(
+      {
+        oldText: '  const a = 1;\n  const b = 2;',
+        newText: '\t  const a = 99;\n    const b = 88;',
+      },
+      { startLine: 1, lines: ['    const a = 1;', '    const b = 2;'] },
+    );
+    assertEq(result, null, 'returns null when any newText line has mixed tab+spaces');
+  }
+
+  section('autofix: tryAutofix declines when CRLF + leading tab in newText');
+  {
+    const result = tryAutofix(
+      {
+        oldText: '  return 1;\r\n  return 2;',
+        newText: '\t  return 99;\r\n    return 88;',
+      },
+      { startLine: 1, lines: ['    return 1;', '    return 2;'] },
+    );
+    assertEq(result, null, 'declined after CRLF normalization detects tab');
+  }
+
+  section('autofix: tryAutofix declines when newText has tab mid-leading (after spaces)');
+  {
+    // hasLeadingTab must catch a tab that appears after leading spaces,
+    // not only at column 0. e.g., `  \treturn` should be detected.
+    const result = tryAutofix(
+      {
+        oldText: '  return 1;',
+        newText: '  \t  return 99;',
+      },
+      { startLine: 2, lines: ['    return 1;'] },
+    );
+    assertEq(result, null, 'detects tab mid-leading whitespace');
+  }
+
+  section('autofix: tryAutofix accepts newText with tabs mid-line (non-leading)');
+  {
+    // Tabs in the content (after leading whitespace) are not indent and
+    // must not trigger decline. e.g., `const s = 'a\tb'`.
+    const result = tryAutofix(
+      {
+        oldText: "  const s = 'a\\tb';",
+        newText: "  const s = 'x\\ty';",
+      },
+      { startLine: 2, lines: ['    const s = \'a\\tb\';'] },
+    );
+    assert(result !== null, 'does not decline on mid-line tab in newText');
+    if (result) {
+      assertEq(result.delta, 2, 'uniform shift delta');
+      assertEq(
+        result.correctedNewText,
+        "    const s = 'x\\ty';",
+        'newText shifted uniformly; mid-line tab preserved as content',
+      );
+    }
+  }
 }
