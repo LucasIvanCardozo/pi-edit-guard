@@ -1,6 +1,6 @@
 {
   "name": "@lucascardozo/pi-edit-guard",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Pi extension that wraps the native edit tool with indentation-drift recovery, uniqueness enforcement, and batch-aware error reporting. Fixes the most common LLM failure mode in code editing.",
   "type": "module",
   "license": "MIT",
@@ -32,6 +32,8 @@
   "scripts": {
     "test": "node --experimental-strip-types tests/run.ts",
     "test:watch": "node --watch --experimental-strip-types tests/run.ts",
+    "test:autofix": "node --experimental-strip-types scripts/test-autofix.ts",
+    "test:autofix:verbose": "node --experimental-strip-types scripts/test-autofix.ts --verbose",
     "typecheck": "tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --allowImportingTsExtensions --skipLibCheck --strict index.ts src/**/*.ts",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

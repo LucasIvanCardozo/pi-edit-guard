@@ -13,7 +13,7 @@ Fixes the most common LLM failure mode in code editing: the model counts spaces 
 
 ## Status
 
-- **v0.7.0 in development** (silent auto-fix for unique-drift + spaces-only)
+- **v0.7.1 in development** (atomic-block invariant + e2e test script)
 - Install: `pi install npm:@lucascardozo/pi-edit-guard`
 - Repo: https://github.com/LucasIvanCardozo/pi-edit-guard
 - License: MIT
@@ -190,12 +190,13 @@ Default: `0.90`. Lower if you want the guard to catch more typos; higher if you 
 
 ## Testing
 
-184 automated tests across 10 modules, no deps:
+184 automated tests across 10 modules, plus an end-to-end script that exercises real files in `/tmp`:
 
 ```bash
-pnpm test          # one-shot (uses node --experimental-strip-types)
-pnpm test:watch    # watch mode
-pnpm run typecheck # tsc --noEmit
+pnpm test                # one-shot (uses node --experimental-strip-types)
+pnpm test:watch          # watch mode
+pnpm run test:autofix    # e2e: real files in /tmp, 8 scenarios
+pnpm run typecheck       # tsc --noEmit
 ```
 
 Test layout (one file per source module, plus an e2e test that loads the extension via jiti):
@@ -214,9 +215,12 @@ tests/
 ├── evaluate.test.ts               # src/evaluate.ts (cascade)
 ├── format.test.ts                 # src/format/* (all output formats)
 └── extension.test.ts              # src/extension.ts (e2e via jiti)
+
+scripts/
+└── test-autofix.ts                # e2e against real files in /tmp
 ```
 
-Coverage includes the 3 surrender events observed in production logs (where models gave up on `edit` and switched to `python`/`bash` after 2-3 failed attempts), regression cases from v0.5.0/v0.6.0, batch semantics (1 of N edits fails → consolidated report), and the autofix happy path (uniform shift) + decline paths (tabs, non-uniform, MAX_SANE_DELTA).
+Coverage includes the 3 surrender events observed in production logs (where models gave up on `edit` and switched to `python`/`bash` after 2-3 failed attempts), regression cases from v0.5.0/v0.6.0, batch semantics (1 of N edits fails → consolidated report), the autofix happy path (uniform shift) + decline paths (tabs, non-uniform, MAX_SANE_DELTA), and atomic-block invariant (no partial mutations when any edit is unfixable).
 
 ## Compatibility
 

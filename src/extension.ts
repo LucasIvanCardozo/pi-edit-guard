@@ -16,12 +16,16 @@
  *           report so the model can fix everything in one pass.
  *   - tool_result: catches native edit failures. Re-runs the cascade on the
  *       current file state and mutates the error message in-place.
+ *
+ * Atomic semantics: when ANY edit is unfixable, NO edits are mutated. This
+ * is enforced by computing autofix results first, then deciding whether to
+ * apply them — only when all edits resolved.
  */
 
 import { readFile } from 'node:fs/promises';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-import { tryAutofix } from './autofix.ts';
+import { type AutofixResult, tryAutofix } from './autofix.ts';
 import {
   GUARDED_TOOL,
   getHintMinSimilarity,
@@ -45,13 +49,13 @@ type ProcessResult =
   | { kind: 'pass' };
 
 /**
- * Read the file once. Run the cascade on every edit. Try to autofix each
- * `unique-drift` verdict. Decide whether to:
+ * Read the file once. Run the cascade on every edit. Compute autofix for
+ * each `unique-drift` edit (without mutating yet). Decide whether to:
  *   - pass through (file unreadable, oversized, or no edits)
- *   - return 'autofixed' (caller lets native edit run; some inputs were
- *     mutated, none block)
- *   - return 'blocked' (caller blocks with consolidated report; atomic
- *     semantics — if any one edit is unfixable, the whole batch is blocked)
+ *   - apply all autofixes and return 'autofixed' (caller lets native edit
+ *     run; inputs are mutated; every edit resolved)
+ *   - return 'blocked' (any edit is unfixable; inputs are NOT mutated;
+ *     atomic block semantics)
  */
 async function processEditInput(
   filePath: string | undefined,
@@ -77,36 +81,44 @@ async function processEditInput(
   const hintMin = getHintMinSimilarity();
   const evaluations = evaluateBatch(content, edits, threshold, maxExamples);
 
-  // Pass 1: try to autofix each unique-drift edit, mutating in place.
-  const autofixed = new Set<number>();
+  // Pass 1: compute autofix for each unique-drift edit WITHOUT mutating.
+  // We need to know upfront whether each edit is resolvable, so we can
+  // atomically decide to block on the whole batch if any one is unfixable.
+  const autofixResults = new Map<number, AutofixResult>();
   for (let i = 0; i < evaluations.length; i++) {
     const evaluation = evaluations[i];
     if (evaluation.kind !== 'unique-drift') continue;
-    const edit = edits[i];
-    const fix = tryAutofix(edit, evaluation.block);
-    if (fix === null) continue;
-    edit.oldText = fix.correctedOldText;
-    edit.newText = fix.correctedNewText;
-    autofixed.add(i);
+    const fix = tryAutofix(edits[i], evaluation.block);
+    if (fix !== null) autofixResults.set(i, fix);
   }
 
-  // Pass 2: if any verdict remains unfixable, block atomically. An edit is
-  // considered resolved when it is ok-literal OR was autofixed in Pass 1.
+  // Pass 2: is any edit unfixable? An edit is unfixable when its kind is
+  // fuzzy/ambiguous/no-match, OR its kind is unique-drift but tryAutofix
+  // returned null (tabs, non-uniform shift, or MAX_SANE_DELTA exceeded).
   const hasUnfixableError = evaluations.some((e, i) => {
     if (e.kind === 'ok-literal') return false;
-    if (e.kind === 'unique-drift' && autofixed.has(i)) return false;
+    if (e.kind === 'unique-drift' && autofixResults.has(i)) return false;
     return true;
   });
 
-  if (!hasUnfixableError) {
-    return { kind: 'autofixed', corrections: autofixed.size };
+  if (hasUnfixableError) {
+    // Atomic block: do NOT mutate any input. The caller will surface the
+    // consolidated report and the model retries the whole batch.
+    const report = formatConsolidatedReport(evaluations, edits.length, threshold, hintMin);
+    if (report) {
+      return { kind: 'blocked', reason: report };
+    }
+    return { kind: 'pass' };
   }
 
-  const report = formatConsolidatedReport(evaluations, edits.length, threshold, hintMin);
-  if (report) {
-    return { kind: 'blocked', reason: report };
+  // Pass 3: every edit resolved. Apply all autofix mutations in place.
+  // Native edit will run with the corrected arguments.
+  for (const [i, fix] of autofixResults) {
+    edits[i].oldText = fix.correctedOldText;
+    edits[i].newText = fix.correctedNewText;
   }
-  return { kind: 'pass' };
+
+  return { kind: 'autofixed', corrections: autofixResults.size };
 }
 
 export default function (pi: ExtensionAPI) {
