@@ -9,6 +9,7 @@
  */
 
 import { printSummary } from './_framework.ts';
+import * as autofixTests from './autofix.test.ts';
 import * as blockTests from './block.test.ts';
 import * as evaluateTests from './evaluate.test.ts';
 import * as extensionTests from './extension.test.ts';
@@ -23,6 +24,7 @@ blockTests.run();
 literalMatcherTests.run();
 normalizedMatcherTests.run();
 fuzzyMatcherTests.run();
+autofixTests.run();
 evaluateTests.run();
 formatTests.run();
 await extensionTests.run();

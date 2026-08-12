@@ -6,14 +6,14 @@ Quick context for working on `@lucascardozo/pi-edit-guard`.
 
 Pi extension that wraps the native `edit` tool with batch-aware protection:
 
-1. **`tool_call` hook** — intercepts before native edit runs. Processes **every edit in the batch** (not just the first). If any `oldText` has issues (ambiguous, drift, fuzzy, no-match), blocks the entire batch with a consolidated report so the model can fix everything in one pass.
+1. **`tool_call` hook** — intercepts before native edit runs. Processes **every edit in the batch** (not just the first). For unique indent drift, silently auto-fixes the leading-space shift in `event.input.edits[i]` in place. For ambiguous, fuzzy, or no-match cases (or drift that can't be auto-fixed), blocks the entire batch with a consolidated report so the model can fix everything in one pass.
 2. **`tool_result` hook** — catches native edit failures (atomic: if one edit fails, the whole batch returns an error). Re-runs the cascade and mutates the error in-place.
 
-Fixes the most common LLM failure mode in code editing: the model counts spaces wrong, sends a non-matching `oldText`, and after 2-3 failed edits the model gives up and switches to `bash`/`python` (surrender pattern observed in production logs).
+Fixes the most common LLM failure mode in code editing: the model counts spaces wrong, sends a non-matching `oldText`, and after 2-3 failed edits the model gives up and switches to `bash`/`python` (surrender pattern observed in production logs). The auto-fix path closes this loop entirely for the most common case — pure leading-space drift.
 
 ## Status
 
-- **v0.6.1 in development** (per-line indent markers + CRLF fix)
+- **v0.7.0 in development** (silent auto-fix for unique-drift + spaces-only)
 - Install: `pi install npm:@lucascardozo/pi-edit-guard`
 - Repo: https://github.com/LucasIvanCardozo/pi-edit-guard
 - License: MIT
@@ -23,53 +23,82 @@ Fixes the most common LLM failure mode in code editing: the model counts spaces 
 Multi-file source-only extension. No build step. Pi loads `index.ts` via jiti; `index.ts` re-exports from `src/extension.ts`.
 
 ```
-index.ts                 entry point (thin barrel)
+index.ts                       entry point (thin barrel)
 src/
-├── extension.ts         composition root: default export with tool_call/tool_result hooks
-├── evaluate.ts          evaluateEdit, evaluateBatch (pure cascade)
-├── format.ts            all user-facing message formatting
-├── mutate.ts            in-place mutation of tool result events
-├── config.ts            env var readers and constants
-├── types.ts             shared EditEvaluation, CandidateKind types
-├── block.ts             BlockExcerpt type and toBlockExcerpt adapter
-├── whitespace.ts        stripLeadingWhitespace, normalizeText, describeIndent
+├── extension.ts               composition root: default export with tool_call/tool_result hooks
+├── evaluate.ts                evaluateEdit, evaluateBatch (pure cascade)
+├── autofix.ts                 tryAutofix — pure leading-space shift computation
+├── mutate.ts                  in-place mutation of tool result events
+├── config.ts                  env var readers and constants
+├── types.ts                   shared EditEvaluation, CandidateKind types
+├── block.ts                   BlockExcerpt type and toBlockExcerpt adapter
+├── whitespace.ts              stripLeadingWhitespace, normalizeText (spaces-only)
+├── format/
+│   ├── index.ts               barrel re-export
+│   ├── candidate.ts           formatCandidate: fuzzy-match + unfixable drift
+│   ├── ambiguous.ts           formatAmbiguousMessage + formatExamples
+│   ├── consolidated.ts        formatConsolidatedReport (atomic block output)
+│   └── no-match.ts            formatNoMatchMessage (best-similarity hint)
 └── matchers/
-    ├── index.ts         barrel re-export
-    ├── literal.ts       countLineAnchoredMatches, findLineAnchoredMatches
-    ├── normalized.ts    findNormalizedMatches
-    └── fuzzy.ts         findFuzzyMatches, lineCharSimilarity, levenshteinDistance
-tests/                   see "Testing" section
-README.md                install + usage
-LICENSE                  MIT
-AGENTS.md                this file
+    ├── index.ts               barrel re-export
+    ├── literal.ts             countLineAnchoredMatches, findLineAnchoredMatches
+    ├── normalized.ts          findNormalizedMatches
+    └── fuzzy.ts               findFuzzyMatches, lineCharSimilarity, levenshteinDistance
+tests/                         see "Testing" section
+README.md                      install + usage
+LICENSE                        MIT
+AGENTS.md                      this file
 ```
 
 ## Architecture
 
 ### Cascade (per edit)
 
-1. **Literal line-anchored count** — match must start at the beginning of a line. This is the bug fix vs v0.5.0: the old `split().length - 1` counted substrings, so `"  return 1;"` would match inside `"    return 1;"` as a false positive.
-2. **Whitespace-normalized exact match** — strip leading spaces/tabs per line, look for exact match.
+Each edit is graded through three steps:
+
+1. **Literal line-anchored count** — match must start at the beginning of a line. Bug fix vs v0.5.0: the old `split().length - 1` counted substrings, so `"  return 1;"` would match inside `"    return 1;"` as a false positive.
+2. **Whitespace-normalized exact match** — strip leading spaces per line, look for exact match.
 3. **Char-level Levenshtein per line, averaged** — char-level similarity per line, averaged across the block.
 
 Each step resolves to one of:
-- `ok-literal` — pass through
-- `unique-drift` — block with correctly-indented block (one normalized match)
-- `fuzzy-match` — block with similarity (one fuzzy match)
+- `ok-literal` — pass through, native edit runs as-is
+- `unique-drift` — pure leading-space shift; **auto-fix path** (silent) or block (when auto-fix can't apply)
+- `fuzzy-match` — block with character-diff example (fuzzy verified, model decides whether to retry)
 - `ambiguous-{literal,normalized,fuzzy}` — block with up to 3 example blocks
 - `no-match` — block with best-similarity score + (optionally) closest block as hint
 
+### Auto-fix path (silent success)
+
+When the cascade resolves to `unique-drift`, `tryAutofix` in `src/autofix.ts` computes a uniform `delta` (the difference in leading-space count between the model's `oldText` and the file's matched block, per non-blank line). If the delta is uniform and within defensive bounds:
+
+1. Mutate `event.input.edits[i].oldText` to the file's verbatim block — the cascade already guarantees this matches.
+2. Mutate `event.input.edits[i].newText` to apply the same shift to each line.
+3. Return `undefined` from the hook — native edit runs with the corrected arguments.
+
+This closes the surrender pattern for the most common failure mode. The model never sees an error message; the edit just succeeds.
+
+Auto-fix **declines** (returns `null`) when:
+- `oldText` or the file block contains tabs (the project assumes spaces-only; tabs return to the existing block+report path)
+- The delta is non-uniform across non-blank lines (model's error is not a clean shift mistake)
+- The line counts differ between model `oldText` and the file block (cascade guarantees they shouldn't, but defended against)
+- Delta exceeds `MAX_SANE_DELTA` (50 spaces; defensive bug-cap)
+- `oldText` or `newText` is missing/empty
+
+When auto-fix declines AND any other verdict in the batch is unfixable (fuzzy, ambiguous, no-match, or unfixable drift), the whole batch is **atomically blocked** with a consolidated report — no partial-fix permitted.
+
 ### Composition root (`src/extension.ts`)
 
-This is the only file that knows about the Pi runtime. Everything else in `src/` is pure and reusable. The hooks wire together config, evaluation, formatting, and mutation.
+The only file that knows about the Pi runtime. Everything else in `src/` is pure and reusable. The hooks wire together config, evaluation, autofix, formatting, and mutation.
 
 ```ts
 pi.on("tool_call", async (event) => {
-  // Read file → evaluateBatch (every edit) → formatConsolidatedReport → block if any issue
+  // Read file once → evaluateBatch (every edit) → tryAutofix per unique-drift
+  //   → if all resolved, mutate event.input and return undefined (native edit runs)
+  //   → if any unfixable, block with formatConsolidatedReport
 });
 
 pi.on("tool_result", async (event) => {
-  // Same cascade; mutate event.content in-place so quiet-tools sees our message
+  // Re-run cascade on current file state; mutate event.content in-place (quiet-tools compat)
 });
 ```
 
@@ -90,48 +119,49 @@ export function mutateToolResult(event, newText, isError) {
 
 We also set `isError: false` so renderers like `quiet-tools` collapse the output via `COLLAPSED_TAIL_LINE_LIMIT`. The model still receives the full content (the mutation doesn't truncate anything).
 
+**Tool-call mutation** (`event.input.edits[i].oldText` / `.newText`) is also in-place. The Pi runtime mutates `event.input` for `tool_call` handlers; later handlers see earlier mutations.
+
 ## Conventions
+
+### Spaces-only assumption
+
+The project assumes files use leading SPACES only (no tabs). Tabs are treated as content, not indent. This simplification:
+
+- `whitespace.ts::stripLeadingWhitespace` only strips spaces (was spaces+tabs).
+- `autofix.ts::tryAutofix` returns `null` when any line has a leading tab → cascades to the block+report path.
+- The legend, indent descriptors, and format output all use `sp` for spaces. There is no `tb` variant.
+
+If you need tab support in the future, see the `Roadmap` section. For now the simplification buys us cleaner tests, simpler delta computation, and a uniform-shift invariant that auto-fix can rely on.
 
 ### Candidate message format (fenced code block, copy-pasteable)
 
-For the `unique-drift` case, the block is wrapped in a Markdown fenced code block. Each line is prefixed with a `[Xsp]` / `[Xtb]` marker showing its leading-whitespace count. The marker is **descriptive metadata, not part of the file's content** — strip it to recover the actual line. The legend `sp = spaces, tb = tabs` is always visible for the drift case so the model can interpret the markers without prior knowledge.
+For `fuzzy-match` and unfixable `unique-drift`, the block is the file's lines verbatim. The model can copy them as its new `oldText` without any transformation:
 
 ```
 Error: Edit failed. Indentation in your oldText didn't match the file.
 
-sp = spaces, tb = tabs.
-The `[Xsp]` / `[Xtb]` markers are descriptive metadata — strip them to get the file's original content.
-
-Lines 12-16. Use the lines below verbatim as your new oldText (after stripping the markers):
+Lines 12-16. Use these lines verbatim as your new oldText (including leading whitespace):
 
 ```
-[8sp]         if (item % 2 === 0) {
-[10sp]           return acc + item * 2;
-[8sp]         } else {
-[10sp]           return acc + item;
-[8sp]         }
+    if (item % 2 === 0) {
+      return acc + item * 2;
+    } else {
+      return acc + item;
+    }
 ```
 ```
 
-**Why per-line markers (instead of plain verbatim block):** addresses the failure mode observed in `carta-qr` (2024) where the model assumed the bullets were indented at 2 spaces based on context, ignored the verbatim block we returned, and re-submitted the same wrong indentation twice before falling back to `read`+`grep`. The per-line marker makes the indent explicit per line even when the block has mixed indents (e.g. some lines `0sp`, others `4sp`).
-
-**Indent descriptors**:
-- `4sp` → 4 spaces
-- `2tb` → 2 tabs
-- `2sp+1tb` → mixed
-- `0sp` → no leading whitespace
-
-The `0sp` form (rather than `-` for "no indent") keeps the marker format uniform: every line gets `[Xsp]` or `[Xtb]`. The model doesn't need to learn a special-case symbol.
+For `fuzzy-match`, the header reads `Your oldText had a small difference from the file.` and the message includes `(similarity 0.95)`.
 
 ### Message rules (no redundancies)
 
-- **DON'T** include `Edit failed: oldText not found in /path` — path is already in the tool header, "oldText not found" is implied by the rest
-- **DON'T** include `Retry using this exact text as oldText, preserving the indentation shown` — too verbose, the model knows what to do
-- **DO** start directly with the actionable info (`Error: Edit failed. ...`, `Found N similar blocks.`, `No sufficiently similar block found.`)
-- The instruction line `Use this block as your new oldText in your next edit call:` appears ONCE, right before the block.
-- The block is shown as a fenced code block with `[Xsp]` / `[Xtb]` prefixes per line (drift case only). The model strips these markers to get the verbatim content. The fuzzy case keeps a plain verbatim block (no markers).
+- **DON'T** include `Edit failed: oldText not found in /path` — path is already in the tool header, "oldText not found" is implied by the rest.
+- **DON'T** include `Retry using this exact text as oldText, preserving the indentation shown` — too verbose, the model knows what to do.
+- **DO** start directly with the actionable info (`Error: Edit failed. ...`, `Found N similar blocks.`, `No sufficiently similar block found.`).
+- The instruction line appears ONCE, right before the block.
+- The block is shown as a fenced code block. The model copies it as-is — no markers to strip, no transformation needed (the v0.6 per-line `[Xsp]` markers were removed because auto-fix handles the common case silently).
 - The header distinguishes two cases:
-  - `Indentation in your oldText didn't match the file.` (normalized match: pure indentation drift)
+  - `Indentation in your oldText didn't match the file.` (normalized match: pure indentation drift, unfixable)
   - `Your oldText had a small difference from the file.` (fuzzy match: typos, small character differences)
 
 ## Configuration
@@ -154,9 +184,13 @@ Default: `0.90`. Lower if you want the guard to catch more typos; higher if you 
 
 5. **`isError: false` makes quiet-tools collapse.** When `isError: true`, the renderer shows full output. Setting `false` triggers `COLLAPSED_TAIL_LINE_LIMIT` (10 lines), making the TUI compact while the model still gets everything.
 
+6. **CRLF in `oldText` ≠ file CRLF.** Without normalizing `oldText` to LF before the literal match, models sending CRLF (or copy-pasting from Windows-style editors) get false-positive "wrong indentation" reports. Fixed in v0.6.1: `findLineAnchoredMatches(normalizedFileContent, oldTextLf)` — normalize `oldText` too.
+
+7. **The surrender pattern dies at the auto-fix layer.** v0.6 made the error message better; v0.7 makes the error disappear for the most common case (uniform leading-space shift). The model never sees a block message and never falls back to `bash`/`python`.
+
 ## Testing
 
-118 automated tests across 8 modules, no deps:
+184 automated tests across 10 modules, no deps:
 
 ```bash
 pnpm test          # one-shot (uses node --experimental-strip-types)
@@ -170,6 +204,7 @@ Test layout (one file per source module, plus an e2e test that loads the extensi
 tests/
 ├── _framework.ts                  # dependency-free assert/assertEq/assertMatch
 ├── run.ts                         # runner: imports all test modules in order
+├── autofix.test.ts                # src/autofix.ts (pure delta + shift logic)
 ├── whitespace.test.ts             # src/whitespace.ts
 ├── block.test.ts                  # src/block.ts
 ├── matchers/
@@ -177,11 +212,11 @@ tests/
 │   ├── normalized.test.ts         # src/matchers/normalized.ts
 │   └── fuzzy.test.ts              # src/matchers/fuzzy.ts
 ├── evaluate.test.ts               # src/evaluate.ts (cascade)
-├── format.test.ts                 # src/format.ts (all output formats)
+├── format.test.ts                 # src/format/* (all output formats)
 └── extension.test.ts              # src/extension.ts (e2e via jiti)
 ```
 
-Coverage includes the 3 surrender events observed in production logs (where models gave up on `edit` and switched to `python`/`bash` after 2-3 failed attempts), regression cases from v0.5.0, and batch semantics (1 of 5 edits fails → consolidated report).
+Coverage includes the 3 surrender events observed in production logs (where models gave up on `edit` and switched to `python`/`bash` after 2-3 failed attempts), regression cases from v0.5.0/v0.6.0, batch semantics (1 of N edits fails → consolidated report), and the autofix happy path (uniform shift) + decline paths (tabs, non-uniform, MAX_SANE_DELTA).
 
 ## Compatibility
 
@@ -205,10 +240,11 @@ npm publish --access public
 
 Token must be created at https://www.npmjs.com/settings/tokens → Automation → with **Bypass two-factor authentication** enabled, scoped to `@lucascardozo`.
 
-## Roadmap candidates (v0.7.0+)
+## Roadmap candidates (v0.8.0+)
 
 - Adaptive threshold (stricter for long blocks, more lenient for short)
 - Path exclusion config (e.g., skip `*.lock` files)
 - New matchers: regex-based, AST-based
+- Tab support (reintroduce with separate cascade branch; tabs would block + report instead of autofix)
 - Metrics for false positives vs false negatives
 - Telemetry opt-in for evaluating threshold defaults

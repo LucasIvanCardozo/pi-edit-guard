@@ -1,0 +1,108 @@
+/**
+ * auto-fix: pure functions that attempt to silently correct indentation-only
+ * edit failures by shifting the leading-space count of `newText` by the same
+ * delta observed between the model's `oldText` and the file's matched block.
+ *
+ * Design constraints:
+ * - Spaces-only (no tabs). The project assumes files use leading spaces only.
+ *   Tabs return null and fall through to the existing block+report path.
+ * - Uniform shift required across all non-blank lines. If different lines have
+ *   different deltas, the model's oldText doesn't represent a clean indent
+ *   mistake — return null and let the existing path surface the error.
+ * - Blank lines (whitespace-only lines) are ignored for delta computation and
+ *   stay unchanged under shift. They don't carry semantic indent.
+ *
+ * This module is pure: no I/O, no Pi imports. Trivial to unit-test.
+ */
+
+import type { BlockExcerpt } from './block.ts';
+
+export type AutofixResult = {
+  /** File's actual lines verbatim (the cascade already guarantees this matches). */
+  correctedOldText: string;
+  /** newText with leading spaces shifted by `delta`. */
+  correctedNewText: string;
+  /** Signed spaces added per non-blank line (positive = deeper, negative = shallower). */
+  delta: number;
+  /** 1-indexed line range where the block sits in the file. */
+  startLine: number;
+  endLine: number;
+};
+
+/**
+ * Defense against bugs in our own shift computation. The cascade guarantees
+ * the matched block is unique; under correct code the delta is whatever it is.
+ * If `|delta| > MAX_SANE_DELTA`, something is off (e.g. counted whitespace
+ * characters vs spaces) — refuse and fall through to the existing path.
+ */
+const MAX_SANE_DELTA = 50;
+
+type EditInput = { oldText?: string; newText?: string };
+
+export function tryAutofix(edit: EditInput, block: BlockExcerpt): AutofixResult | null {
+  const oldText = edit.oldText;
+  const newText = edit.newText;
+  if (oldText === undefined || newText === undefined || oldText === '') return null;
+
+  // Normalize CRLF on both sides; cascade normalizes the file but oldText/newText
+  // come straight from the model and may have CRLF line endings.
+  const normalizedOldText = oldText.replace(/\r\n/g, '\n');
+
+  const modelLines = normalizedOldText.split('\n');
+  const fileLines = block.lines;
+  if (modelLines.length !== fileLines.length) return null;
+
+  // (1) Compute a uniform delta from non-blank pairs of lines. Tabs in either
+  // side disqualify the autofix — we don't handle them.
+  let delta: number | null = null;
+  for (let i = 0; i < modelLines.length; i++) {
+    const m = modelLines[i];
+    const f = fileLines[i];
+    if (m.trim() === '' && f.trim() === '') continue;
+    if (m.trim() === '' || f.trim() === '') continue;
+    if (hasLeadingTab(m) || hasLeadingTab(f)) return null;
+
+    const d = countLeadingSpaces(f) - countLeadingSpaces(m);
+    if (delta === null) {
+      delta = d;
+    } else if (delta !== d) {
+      return null;
+    }
+  }
+  if (delta === null || delta === 0) return null;
+  if (Math.abs(delta) > MAX_SANE_DELTA) return null;
+
+  // (2) Apply shift to newText per-line; blank lines stay as-is.
+  const normalizedNewText = newText.replace(/\r\n/g, '\n');
+  const correctedNewText = normalizedNewText
+    .split('\n')
+    .map((line) => shiftLeadingSpaces(line, delta))
+    .join('\n');
+
+  // (3) correctedOldText is the file block verbatim — the cascade already
+  // matched whitespace-stripped equality, so this IS what the file contains.
+  const correctedOldText = fileLines.join('\n');
+
+  return {
+    correctedOldText,
+    correctedNewText,
+    delta,
+    startLine: block.startLine,
+    endLine: block.startLine + fileLines.length - 1,
+  };
+}
+
+export function countLeadingSpaces(line: string): number {
+  const m = line.match(/^( *)/);
+  return m ? m[1].length : 0;
+}
+
+export function hasLeadingTab(line: string): boolean {
+  return line.startsWith('\t');
+}
+
+export function shiftLeadingSpaces(line: string, delta: number): string {
+  if (line.trim() === '') return line;
+  const leading = countLeadingSpaces(line);
+  return ' '.repeat(Math.max(0, leading + delta)) + line.slice(leading);
+}

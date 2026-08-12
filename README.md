@@ -1,10 +1,10 @@
 # pi-edit-guard
 
-Pi extension that wraps the native `edit` tool with **indentation-drift recovery**, **uniqueness enforcement**, and **batch-aware error reporting**.
+Pi extension that wraps the native `edit` tool with **silent auto-fix**, **uniqueness enforcement**, and **batch-aware error reporting**.
 
-Fixes the most common LLM failure mode in code editing: the model counts spaces wrong, sends a `oldText` that doesn't match the file's actual indentation, and the edit fails with a generic "Could not find" error. The model then has to either re-read the file (cost) or give up.
+Fixes the most common LLM failure mode in code editing: the model counts spaces wrong, sends an `oldText` that doesn't match the file's actual indentation, and the edit fails with a generic "Could not find" error. The model then has to either re-read the file (cost) or give up.
 
-`pi-edit-guard` catches these failures and returns the most probable target block with **explicit indentation annotations** so the model can retry correctly. When the model sends multiple atomic edits in one batch, the guard evaluates all of them and produces a single consolidated report so the model can fix everything in one pass instead of N.
+`pi-edit-guard` **silently corrects** these failures for the most common case (uniform leading-space shift) by mutating `event.input` in place and letting native edit run with corrected `oldText`/`newText`. When the failure is more complex (ambiguous match, character difference, no match), it surfaces a consolidated report so the model can fix everything in one pass instead of N.
 
 ## Install
 
@@ -21,11 +21,11 @@ pi install npm:@lucascardozo/pi-edit-guard
 For each `oldText` in the batch:
 
 1. Counts line-anchored literal occurrences (native edit semantics: match must start at the beginning of a line)
-   - 1 unique → pass
+   - 1 unique → pass through
    - 0 → continue to step 2
    - > 1 → block with examples
-2. Whitespace-normalized exact match (strip leading spaces/tabs per line)
-   - 1 unique → block with correctly-indented block
+2. Whitespace-normalized exact match (strip leading spaces per line)
+   - 1 unique → **auto-fix path** (silent, see below) or block if auto-fix can't apply
    - > 1 → block with examples
    - 0 → continue to step 3
 3. Char-level Levenshtein per line, averaged across the block
@@ -33,29 +33,30 @@ For each `oldText` in the batch:
    - > 1 above threshold → block with examples
    - 0 above threshold → block with best-match hint
 
-**Layer 2 — `tool_result` (when native edit fails)**
+**Auto-fix (silent success)** — when the cascade resolves to `unique-drift` with a uniform leading-space shift, `pi-edit-guard` mutates the edit in place:
 
-Re-runs the same cascade against the file's current state and mutates the error message in-place to point at the most probable target.
+- `oldText` is replaced with the file's verbatim block (the cascade already guarantees this matches).
+- `newText` is shifted by the same delta, per non-blank line.
+- The model receives a normal edit-success result. No error message, no retry cost.
+
+Auto-fix **declines** (and falls back to the block path) when:
+
+- `oldText` or the file block contains tabs (project assumes spaces-only).
+- The delta is non-uniform across non-blank lines (model's mistake isn't a clean shift).
+- Defensive bug-cap of ±50 spaces is exceeded.
+
+**Layer 2 — `tool_result` (when native edit fails atomically)**
+
+Re-runs the cascade against the file's current state and mutates the error message in-place to surface the most probable target.
 
 ### Batch semantics
 
-Both layers iterate over `input.edits[]`. If even one edit has an issue, the whole batch is blocked with a **consolidated report** so the model can fix it in one pass:
+Both layers iterate over `input.edits[]`. The atomicity rule: when the cascade resolves to auto-fixable for some edits but unfixable for others, the entire batch is blocked with a **consolidated report** so the model can fix everything in one pass:
 
 ```
-Edit guard: 2 of 5 edits have issues.
+Edit guard: 1 of 2 edits have issues.
 
-Edit 1: Error: Edit failed. Indentation in your oldText didn't match the file.
-
-sp = spaces, tb = tabs.
-The `[Xsp]` / `[Xtb]` markers are descriptive metadata — strip them to get the file's original content.
-
-Lines 5-5. Use the lines below verbatim as your new oldText (after stripping the markers):
-
-```
-[4sp]     const b = 2;
-```
-
-Edit 4: Found 6 similar blocks (similarity ≥ 0.90).
+Edit 2: Found 6 similar blocks (similarity ≥ 0.90).
 First 3 examples:
 - Lines 3-3:
 ```
@@ -77,32 +78,47 @@ Fix the issues above and re-submit the entire batch. Edits already passing will 
 
 The consolidated report is the model's single source of truth: it knows exactly which edits failed and why, and can fix all of them in one go instead of N trial-and-error rounds.
 
-### Mutates `event.content` in-place
+### Mutates events in-place
 
-Other extensions (e.g. `gentle-pi`'s `quiet-tools`) register custom renderers that read `result.content` directly. Returning a `{ content: [...] }` patch from `tool_result` would create a new object that the custom renderer would never see.
-
-`pi-edit-guard` mutates `event.content` in-place so custom renderers pick up the enriched message. It also sets `isError: false` so renderers like `quiet-tools` collapse long output via their `COLLAPSED_TAIL_LINE_LIMIT` (the model still receives the full content — only the visual collapses).
+- `tool_call`: mutates `event.input.edits[i].oldText` and `.newText` in place when auto-fix applies. The Pi runtime applies mutations across handlers; native edit then runs with the corrected arguments.
+- `tool_result`: mutates `event.content` in place so custom renderers (e.g. `gentle-pi`'s `quiet-tools`) pick up the enriched message. `isError` is set to `false` so renderers like `quiet-tools` collapse long output via their `COLLAPSED_TAIL_LINE_LIMIT`.
 
 ## Output format
 
-### Single edit: drift recovery
+### Single edit: fuzzy-match (character difference)
+
+When auto-fix doesn't apply and the cascade surfaces a fuzzy match:
+
+```
+Error: Edit failed. Your oldText had a small difference from the file.
+
+Lines 12-12. Use this block verbatim as your new oldText:
+
+```
+    return 11;
+```
+(similarity 0.92)
+```
+
+### Single edit: drift recovery (unfixable case)
+
+When auto-fix declines (e.g. the file uses tabs, or the delta is non-uniform):
 
 ```
 Error: Edit failed. Indentation in your oldText didn't match the file.
 
-sp = spaces, tb = tabs.
-The `[Xsp]` / `[Xtb]` markers are descriptive metadata — strip them to get the file's original content.
-
-Lines 12-16. Use the lines below verbatim as your new oldText (after stripping the markers):
+Lines 12-16. Use these lines verbatim as your new oldText (including leading whitespace):
 
 ```
-[8sp]         if (item % 2 === 0) {
-[10sp]           return acc + item * 2;
-[8sp]         } else {
-[10sp]           return acc + item;
-[8sp]         }
+    if (item % 2 === 0) {
+      return acc + item * 2;
+    } else {
+      return acc + item;
+    }
 ```
 ```
+
+The block is the file's actual lines, byte-exact. The model copies them as-is — no transformation needed.
 
 ### Single edit: ambiguous (with examples)
 
@@ -141,17 +157,6 @@ Re-read the file to see its current contents before retrying.
 
 When the best similarity is below the hint minimum (default 0.50), the closest block is omitted to avoid misleading the model.
 
-### Indent descriptors
-
-Each line of a `unique-drift` candidate is prefixed with a `[Xsp]` / `[Xtb]` marker showing its leading-whitespace count. The marker is descriptive metadata, not part of the file's content — strip it to recover the actual line.
-
-- `4sp` → 4 spaces
-- `2tb` → 2 tabs
-- `2sp+1tb` → mixed
-- `0sp` → no leading whitespace
-
-The legend `sp = spaces, tb = tabs` is **always** visible for the indentation case so the model can interpret the markers without prior knowledge. This addresses the failure mode observed in `carta-qr` (2024) where the model assumed the bullets were indented at 2 spaces based on context, ignored the verbatim block we returned, and re-submitted the same wrong indentation twice before falling back to `read`+`grep`. The per-line marker makes the indent explicit per line even when the block has mixed indents (e.g. some lines `0sp`, others `4sp`).
-
 ## Configuration
 
 | Env var | Default | Range | Effect |
@@ -169,8 +174,8 @@ PI_EDIT_GUARD_EXAMPLES=5 PI_EDIT_GUARD_HINT_MIN=0.6 pi
 
 ## What it does NOT do
 
-- It does **not** write to files. The model must retry the edit itself.
-- It does **not** auto-fix indentation. The model decides what to do with the suggestion.
+- It does **not** silently fix content differences, only indentation drift with a uniform leading-spaces shift.
+- It does **not** suppress errors for tabs or non-uniform drift — those fall through to the existing block+report path.
 - It does **not** change the `bash`, `write`, `read`, or any other tool — only `edit`.
 
 ## Testing
@@ -181,6 +186,7 @@ A test suite is included in `tests/`. It is split by module so each test runs in
 tests/
 ├── _framework.ts              # dependency-free assertion library
 ├── run.ts                     # test runner (imports all test modules)
+├── autofix.test.ts            # src/autofix.ts (delta + shift logic)
 ├── whitespace.test.ts         # src/whitespace.ts
 ├── block.test.ts              # src/block.ts
 ├── matchers/
@@ -188,16 +194,16 @@ tests/
 │   ├── normalized.test.ts     # src/matchers/normalized.ts
 │   └── fuzzy.test.ts          # src/matchers/fuzzy.ts
 ├── evaluate.test.ts           # src/evaluate.ts
-├── format.test.ts             # src/format.ts
+├── format.test.ts             # src/format/* (all output formats)
 └── extension.test.ts          # src/extension.ts (e2e via jiti)
 ```
 
 Coverage:
-- Unit tests for every pure module (whitespace, block, each matcher, evaluate, format)
+- Unit tests for every pure module (whitespace, block, autofix, each matcher, evaluate, format)
 - E2E test that loads the extension via jiti (same loader Pi uses), registers hooks, and fires events with real files
-- Regression cases from v0.5.0 (drift, fuzzy, ok, ambiguous)
-- The 3 surrender events observed in production logs (where models gave up on `edit` and switched to `python`/`bash` after 2-3 failed attempts)
-- Batch semantics: 1 of 5 edits fails → consolidated report
+- Regression cases from v0.5.0/v0.6.0 (drift, fuzzy, ok, ambiguous)
+- Autofix happy path (uniform shift) + decline paths (tabs, non-uniform, MAX_SANE_DELTA)
+- Batch semantics: atomic block when one edit can't be auto-fixed
 - CRLF normalization, edge cases, max-examples limit
 
 Run with:
@@ -218,12 +224,18 @@ pi-edit-guard/
 ├── src/
 │   ├── extension.ts         # composition root: default export with tool_call/tool_result hooks
 │   ├── evaluate.ts          # evaluateEdit, evaluateBatch (pure cascade)
-│   ├── format.ts            # all user-facing message formatting
+│   ├── autofix.ts           # tryAutofix — pure leading-spaces delta + shift logic
 │   ├── mutate.ts            # in-place mutation of tool result events
 │   ├── config.ts            # env var readers and constants
 │   ├── types.ts             # shared EditEvaluation and CandidateKind types
 │   ├── block.ts             # BlockExcerpt type and toBlockExcerpt adapter
-│   ├── whitespace.ts        # stripLeadingWhitespace, normalizeText, describeIndent
+│   ├── whitespace.ts        # stripLeadingWhitespace, normalizeText (spaces-only)
+│   ├── format/
+│   │   ├── index.ts         # barrel re-export
+│   │   ├── candidate.ts     # formatCandidate: fuzzy-match + unfixable drift
+│   │   ├── ambiguous.ts     # formatAmbiguousMessage + formatExamples
+│   │   ├── consolidated.ts  # formatConsolidatedReport (atomic block output)
+│   │   └── no-match.ts      # formatNoMatchMessage (best-similarity hint)
 │   └── matchers/
 │       ├── index.ts         # barrel re-export
 │       ├── literal.ts       # countLineAnchoredMatches, findLineAnchoredMatches
@@ -235,7 +247,7 @@ pi-edit-guard/
 └── package.json
 ```
 
-Each module has one responsibility. To add a new matcher (e.g. AST-based), create a file in `src/matchers/` and add it to the barrel. To add a new output format, add a function to `src/format.ts`. The cascade in `src/evaluate.ts` is the only place that knows about the order of matchers.
+Each module has one responsibility. To add a new matcher (e.g. AST-based), create a file in `src/matchers/` and add it to the barrel. To add a new output format, add a function under `src/format/`. The cascade in `src/evaluate.ts` is the only place that knows about the order of matchers.
 
 ## Compatibility
 

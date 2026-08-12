@@ -1,6 +1,6 @@
 {
   "name": "@lucascardozo/pi-edit-guard",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Pi extension that wraps the native edit tool with indentation-drift recovery, uniqueness enforcement, and batch-aware error reporting. Fixes the most common LLM failure mode in code editing.",
   "type": "module",
   "license": "MIT",

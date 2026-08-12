@@ -14,54 +14,26 @@ const THRESHOLD = 0.9;
 const HINT_MIN = 0.5;
 
 export function run(): void {
-  section('format: formatCandidate (indentation, uniform indent)');
+  section('format: formatCandidate (indentation, unfixable case)');
   {
+    // v0.7+ behavior: when autofix can't apply, the message is the file's
+    // verbatim lines plus a line range. No per-line markers or legend.
     const msg = formatCandidate(5, ['    if (x) {', '      return y;', '    }'], 'indentation');
     assertMatch(msg, /Indentation in your oldText didn't match/, 'mentions indent mismatch');
     assertMatch(msg, /Lines 5-7/, 'shows line range');
-    assertMatch(msg, /Use the lines below verbatim/, 'gives actionable instruction');
-    assertMatch(msg, /sp = spaces, tb = tabs/, 'always shows legend for indent case');
-    assertMatch(msg, /strip them to get the file's original content/, 'clarifies markers are metadata');
-    assertMatch(msg, /\[4sp\] +if \(x\) \{/, 'line 1 has [4sp] marker');
-    assertMatch(msg, /\[6sp\] +return y;/, 'line 2 has [6sp] marker');
-    assertMatch(msg, /\[4sp\] +\}/, 'line 3 has [4sp] marker');
-    assert(!msg.includes('Your oldText had wrong indentation'), 'no longer uses old wording');
-  }
-
-  section('format: formatCandidate (indentation, non-uniform indent)');
-  {
-    // Regression for carta-qr: bullets at 0sp but model assumed 2sp. Block
-    // mixes 0sp and 4sp lines to verify per-line markers work even when
-    // different lines have different indents.
-    const msg = formatCandidate(
-      97,
-      [
-        '- [Realtime](docs/operations/realtime.md) — Soketi env URLs.',
-        '- [Soketi deploy](docs/operations/soketi-deploy.md) — IPv6.',
-        '    - nested bullet at 4sp',
-      ],
-      'indentation',
-    );
-    assertMatch(msg, /Lines 97-99/, 'shows correct line range');
-    assertMatch(msg, /\[0sp\] - \[Realtime\]/, 'line 1 marked [0sp]');
-    assertMatch(msg, /\[0sp\] - \[Soketi deploy\]/, 'line 2 marked [0sp]');
-    assertMatch(msg, /\[4sp\] +- nested bullet/, 'line 3 marked [4sp]');
-    assertMatch(msg, /sp = spaces, tb = tabs/, 'legend always present');
-  }
-
-  section('format: formatCandidate (indentation, mixed spaces + tabs)');
-  {
-    const msg = formatCandidate(1, ['\tcode', '    code'], 'indentation');
-    assertMatch(msg, /sp = spaces, tb = tabs/, 'shows legend when mixed');
-    assertMatch(msg, /\[1tb\] +\tcode/, 'tab line marked [1tb]');
-    assertMatch(msg, /\[4sp\] +code/, 'space line marked [4sp]');
+    assertMatch(msg, /Use these lines verbatim/, 'gives actionable instruction');
+    assertMatch(msg, /including leading whitespace/, 'reminds about leading whitespace');
+    assertMatch(msg, /```\n {4}if \(x\) \{\n {6}return y;\n {4}\}\n```/, 'block shows file lines verbatim');
+    assert(!msg.includes('[0sp]'), 'no per-line markers in v0.7+ output');
+    assert(!msg.includes('sp = spaces, tb = tabs'), 'no indent legend in v0.7+ output');
   }
 
   section('format: formatCandidate (fuzzy)');
   {
     const msg = formatCandidate(10, ['  return 1;'], 'fuzzy');
     assertMatch(msg, /small difference/, 'mentions small difference');
-    assertMatch(msg, /Use this block as your new oldText/, 'fuzzy keeps original instruction');
+    assertMatch(msg, /Use this block verbatim/, 'fuzzy message uses verbatim instruction');
+    assertMatch(msg, /```\n {2}return 1;\n```/, 'block shows file lines verbatim');
     assert(!msg.includes('[0sp]'), 'fuzzy does not add indent markers');
     assert(!msg.includes('sp = spaces'), 'fuzzy does not show indent legend');
   }
