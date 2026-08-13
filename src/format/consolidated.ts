@@ -24,7 +24,7 @@ export function formatEvaluationSection(
     case 'ok-literal':
       return '';
     case 'unique-drift':
-      return `${header} ${formatCandidate(evaluation.block.startLine, evaluation.block.lines, 'indentation')}`;
+      return `${header} ${formatCandidate(evaluation.block.startLine, evaluation.block.lines, 'indentation', evaluation.decline)}`;
     case 'fuzzy-match':
       return (
         `${header} ${formatCandidate(evaluation.block.startLine, evaluation.block.lines, 'fuzzy')}\n` +

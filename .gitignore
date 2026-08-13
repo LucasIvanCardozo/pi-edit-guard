@@ -6,3 +6,6 @@ node_modules/
 
 # Lockfile (project uses ad-hoc pnpm install, lockfile is dev-only)
 pnpm-lock.yaml
+
+# Local CodeGraph cache
+.codegraph/
