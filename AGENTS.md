@@ -172,6 +172,17 @@ PI_EDIT_GUARD_THRESHOLD=0.85 pi  # lower = more permissive fuzzy matching
 
 Default: `0.90`. Lower if you want the guard to catch more typos; higher if you want stricter matches only.
 
+Debug logging is **ON by default** — every cascade invocation writes one NDJSON line with full `oldText` / `newText` content plus a verbatim file snapshot under `<log-dir>/snapshots/<sha>.orig`. To silence:
+
+```bash
+PI_EDIT_GUARD_DEBUG=0 \                # silence the NDJSON log
+PI_EDIT_GUARD_LOG_FULL=0 \              # redact to sha + length + 200-char preview
+PI_EDIT_GUARD_LOG_SNAPSHOTS=0 \        # skip file snapshots
+pi
+```
+
+Log entries include `source` (`tool_call` | `tool_result`) and, on `tool_result` with `isError`, `nativeError` so we can see exactly what the model saw. See the README "Debug logging" section for the full triage workflow.
+
 ## Lessons learned (gotchas)
 
 1. **`input.edits[0].oldText`**, NOT `input.oldText`. Pi's edit tool takes an `edits` array. The first attempt of this extension silently no-op'd because of this.

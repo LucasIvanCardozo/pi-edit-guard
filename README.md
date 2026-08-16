@@ -167,42 +167,65 @@ When the best similarity is below the hint minimum (default 0.50), the closest b
 
 ## Debug logging (production triage)
 
-If a session shows repeated edit failures or unusual drift, enable structured logging to capture exactly what the extension saw:
+The debug logger is **on by default**: every cascade invocation writes one NDJSON line to `/tmp/pi-edit-guard-<pid>.log` with full `oldText` / `newText` content and a verbatim file snapshot under `/tmp/pi-edit-guard-<pid>/snapshots/<sha>.orig`. No env vars needed to turn any of this on.
+
+If you want to silence one of the three flags, set it to `0`:
 
 ```bash
-PI_EDIT_GUARD_DEBUG=1 pi
+PI_EDIT_GUARD_DEBUG=0 \              # silence the NDJSON log
+PI_EDIT_GUARD_LOG_FULL=0 \            # redact to sha + length + 200-char preview
+PI_EDIT_GUARD_LOG_SNAPSHOTS=0 \      # skip file snapshots
+pi
 ```
 
-Each invocation of the cascade appends one NDJSON line to `/tmp/pi-edit-guard-<pid>.log`. Fields per edit:
+Fields per log entry:
 
 | Field | Meaning |
 |---|---|
+| `source` | `'tool_call'` \| `'tool_result'` — which hook fired. Pair the two to see what we intercepted vs what native returned. |
 | `path` | File path the edit targets. |
-| `fileBytes` / `fileSha` / `filePreview` | Length, sha256 (12 hex), and first 200 chars of the file content. |
+| `fileBytes` / `fileSha` / `filePreview` | Length, sha256 (12 hex), and the file content (full when `LOG_FULL` is on; first 200 chars + `[+N chars]` when redacted). |
 | `fileLeadingNewlines` / `fileTrailingNewlines` | Helpful to spot BOM or trailing-newline mismatches. |
-| `edits[i].oldTextBytes` / `oldTextSha` / `oldTextPreview` / `oldTextLeadingSpaces` | What the model sent (full content NEVER logged). |
+| `edits[i].oldTextBytes` / `oldTextSha` / `oldTextPreview` / `oldTextLeadingSpaces` | What the model sent (full content by default; redacted when `LOG_FULL=0`). |
 | `edits[i].newTextBytes` / `newTextSha` / `newTextPreview` / `newTextLeadingSpaces` | What the model wants to write. |
 | `edits[i].evaluationKind` | `ok-literal`, `unique-drift`, `fuzzy-match`, `ambiguous-*`, `no-match`. |
 | `edits[i].autofixOutcome` | `ok` (with `autofixDelta`) \| `declined` (with `declineReason`) \| `n/a`. |
 | `result` | `autofixed` \| `blocked` (with `blockReasonBytes`) \| `pass` \| `pass-oversized` \| `pass-unreadable`. |
 | `autofixedCount` | Number of edits silently corrected (only present when `result: 'autofixed'`). |
+| `snapshotPath` | Absolute path to the saved file snapshot (always present by default; absent when `LOG_SNAPSHOTS=0`). |
+| `nativeError` | What the native edit tool returned (only on `tool_result` events with `isError`). Shows what the model actually saw. |
 
-The log rotates at 5 MB. Disable by unsetting the env var. Privacy: full file/oldText/newText content is never written — only sha + length + preview.
+The log rotates at 5 MB. Snapshots are capped at 200 files / 100MB total (oldest by mtime get pruned).
 
-To triage a session:
+### Custom log path
 
-1. Run `PI_EDIT_GUARD_DEBUG=1 pi` and reproduce the issue.
-2. `cat /tmp/pi-edit-guard-<pid>.log | jq .` (or use any NDJSON viewer).
-3. Compare `oldTextLeadingSpaces` vs `filePreview` line leading-spaces — this is the smoking gun for any "I copied verbatim but it doesn't match" mystery.
+```bash
+PI_EDIT_GUARD_LOG_PATH=./edit-guard.log pi
+```
+
+Snapshots go to `./snapshots/` (i.e. `<dirname(log-path)>/snapshots/`).
+
+### Triage workflow
+
+1. Reproduce the issue with the default config (no env vars needed — everything is on).
+2. `cat <log-path> | jq .` (or use any NDJSON viewer).
+3. Filter by `source` to see what the extension intercepted (`tool_call`) vs what came back from native (`tool_result`). On `tool_result` with `nativeError`, you'll see exactly what the model saw.
+4. If `snapshotPath` is set, `cat <snapshotPath>` shows the file at edit time.
+5. Compare `oldTextLeadingSpaces` vs the snapshot's leading whitespace per line — this is the smoking gun for any "I copied verbatim but it doesn't match" mystery.
 
 ## Configuration
 
-| Env var | Default | Range | Effect |
+| Env var | Default | Opt-out | Effect |
 |---|---|---|---|
-| `PI_EDIT_GUARD_THRESHOLD` | `0.90` | `0..1` | Similarity threshold for fuzzy matches (Level 3). Lower = more permissive. |
-| `PI_EDIT_GUARD_EXAMPLES` | `3` | `>=1` | Max number of example blocks shown for ambiguous cases. |
-| `PI_EDIT_GUARD_HINT_MIN` | `0.50` | `0..1` | Min similarity to show the closest block as hint in no-match messages. |
-| `PI_EDIT_GUARD_DEBUG` | unset | `1`/`true`/`yes` | Enable NDJSON debug log to `/tmp/pi-edit-guard-<pid>.log`. |
+| `PI_EDIT_GUARD_THRESHOLD` | `0.90` | n/a | Similarity threshold for fuzzy matches (Level 3). Lower = more permissive. |
+| `PI_EDIT_GUARD_EXAMPLES` | `3` | n/a | Max number of example blocks shown for ambiguous cases. |
+| `PI_EDIT_GUARD_HINT_MIN` | `0.50` | n/a | Min similarity to show the closest block as hint in no-match messages. |
+| `PI_EDIT_GUARD_DEBUG` | **ON** | `=0` | NDJSON debug log written per cascade invocation. |
+| `PI_EDIT_GUARD_LOG_PATH` | `/tmp/pi-edit-guard-<pid>.log` | n/a | Where the NDJSON log goes. Snapshot dir is `<dirname>/snapshots/`. |
+| `PI_EDIT_GUARD_LOG_FULL` | **ON** | `=0` | Log full `oldText`/`newText` content instead of 200-char preview. |
+| `PI_EDIT_GUARD_LOG_SNAPSHOTS` | **ON** | `=0` | Save a verbatim copy of the file at edit time to `<log-dir>/snapshots/<sha>.orig`. Dedupe by sha, capped at 200 files / 100MB. |
+
+All three log flags default to ON. Set the env var to `0`, `false`, or `no` to disable that flag. `1` / `true` / `yes` still works (redundant with default but explicit).
 
 Set before launching Pi:
 
