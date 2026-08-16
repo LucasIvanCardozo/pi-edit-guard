@@ -113,4 +113,30 @@ export function run(): void {
     const evals = evaluateBatch(file, [{ oldText: oldTextCrlf }], THRESHOLD, MAX_EXAMPLES);
     assertEq(evals[0].kind, 'ok-literal', 'CRLF oldText matches LF file');
   }
+
+  section('evaluate: no-op detected when oldText === newText');
+  {
+    const file = 'const a = 1;\nconst b = 2;\n';
+    const evals = evaluateBatch(
+      file,
+      [{ oldText: 'const a = 1;', newText: 'const a = 1;' }],
+      THRESHOLD,
+      MAX_EXAMPLES,
+    );
+    assertEq(evals[0].kind, 'no-op', 'identical strings → no-op');
+    if (evals[0].kind === 'no-op') {
+      assertEq(evals[0].reason, 'identical-text', 'reason carried for the formatter');
+    }
+  }
+
+  section('evaluate: empty oldText still falls back to no-match (not no-op)');
+  {
+    const evals = evaluateBatch(
+      'const a = 1;\n',
+      [{ oldText: '', newText: '' }],
+      THRESHOLD,
+      MAX_EXAMPLES,
+    );
+    assertEq(evals[0].kind, 'no-match', 'empty oldText → no-match, not no-op');
+  }
 }

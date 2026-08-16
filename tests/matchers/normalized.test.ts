@@ -35,52 +35,51 @@ export function run(): void {
     assertEq(matches2.length, 0, 'whitespace-only needle returns []');
   }
 
-      section('matchers/normalized: REGRESSION — no substring false positives');
-      {
-        // v0.5.0-v0.7.2 used String.indexOf on joined normalized lines. That
-        // matched 'const head' inside BOTH 'const head = ...' AND 'const
-        // header = ...' (substring). Matcher returned ambiguous-normalized
-        // with one real match and one bogus match — the model couldn't tell
-        // which was the target and entered a surrender loop.
-        const file = [
-          'function formatEvaluationSection(',
-          '  editIndex: number,',
-          '  theme: ThemeLike,',
-          '  hintMin: number,',
-          '): string {',
-          '  const header = "Edit X:";',
-          '  switch (evaluation.kind) {',
-          '    case "ok-literal":',
-          '      return "";',
-          '  }',
-          '}',
-          '',
-          'export function formatConsolidatedReport(',
-          '  evaluations: EditEvaluation[],',
-          '  total: number,',
-          '): string | null {',
-          '  const head = "Edit guard: N of M";',
-          '  return head;',
-          '}',
-          '',
-        ].join('\n');
-        const matches = findNormalizedMatches(file, 'const head');
-        assertEq(matches.length, 0, 'sub-needle "const head" no longer false-matches "const header"');
-      }
+  section('matchers/normalized: REGRESSION — no substring false positives');
+  {
+    // v0.5.0-v0.7.2 used String.indexOf on joined normalized lines. That
+    // matched 'const head' inside BOTH 'const head = ...' AND 'const
+    // header = ...' (substring). Matcher returned ambiguous-normalized
+    // with one real match and one bogus match — the model couldn't tell
+    // which was the target and entered a surrender loop.
+    const file = [
+      'function formatEvaluationSection(',
+      '  editIndex: number,',
+      '  theme: ThemeLike,',
+      '  hintMin: number,',
+      '): string {',
+      '  const header = "Edit X:";',
+      '  switch (evaluation.kind) {',
+      '    case "ok-literal":',
+      '      return "";',
+      '  }',
+      '}',
+      '',
+      'export function formatConsolidatedReport(',
+      '  evaluations: EditEvaluation[],',
+      '  total: number,',
+      '): string | null {',
+      '  const head = "Edit guard: N of M";',
+      '  return head;',
+      '}',
+      '',
+    ].join('\n');
+    const matches = findNormalizedMatches(file, 'const head');
+    assertEq(matches.length, 0, 'sub-needle "const head" no longer false-matches "const header"');
+  }
 
-      section('matchers/normalized: REGRESSION — no cross-line false positives');
-      {
-        // Old behavior: indexOf('foo\nbar') matched across line boundaries
-        // (semantically unrelated lines). New behavior: exact line equality.
-        const file = [
-          'line one has trailing something foo',
-          'bar line two starts here',
-          '  foo',
-          '  bar',
-        ].join('\n');
-        const matches = findNormalizedMatches(file, 'foo\nbar');
-        assertEq(matches.length, 1, 'no cross-line false match');
-        assertEq(matches[0].startLine, 3, 'real match is on lines 3-4');
-      }
-
+  section('matchers/normalized: REGRESSION — no cross-line false positives');
+  {
+    // Old behavior: indexOf('foo\nbar') matched across line boundaries
+    // (semantically unrelated lines). New behavior: exact line equality.
+    const file = [
+      'line one has trailing something foo',
+      'bar line two starts here',
+      '  foo',
+      '  bar',
+    ].join('\n');
+    const matches = findNormalizedMatches(file, 'foo\nbar');
+    assertEq(matches.length, 1, 'no cross-line false match');
+    assertEq(matches[0].startLine, 3, 'real match is on lines 3-4');
+  }
 }

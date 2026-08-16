@@ -42,15 +42,15 @@ import {
   MAX_FILE_SIZE,
 } from './config.ts';
 import {
+  appendDebug,
   type DebugEdit,
   type DebugEvent,
-  appendDebug,
   describeFile,
   describeText,
   saveFileSnapshot,
 } from './debug.ts';
 import { evaluateBatch } from './evaluate.ts';
-import { formatConsolidatedReport } from './format/index.ts';
+import { formatConsolidatedReport, runFormatter } from './format/index.ts';
 import { mutateToolResult } from './mutate.ts';
 
 type Edit = { oldText?: string; newText?: string };
@@ -145,6 +145,14 @@ async function processEditInput(
   debug.edits = evaluations.map((evaluation, i) =>
     buildDebugEdit(edits[i], evaluation, autofixOutcomes.get(i)),
   );
+
+  // TODO(v0.10.0): formatter safety net. After autofix resolves all edits,
+  // we mutate event.input.edits and let native edit run. The formatter call
+  // belongs in `tool_result` (after native succeeds) — read the file fresh,
+  // resolve formatter via `resolveFormatterForFile(filePath)`, call
+  // `runFormatter`, write back. For now, no-op stub; see src/format/formatter.ts.
+  // When wired: add `formatterApplied` and `formatterStderr` to debug entries.
+  void runFormatter;
 
   // Pass 2: is any edit unfixable? An edit is unfixable when its kind is
   // fuzzy/ambiguous/no-match, OR its kind is unique-drift but tryAutofix

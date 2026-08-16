@@ -95,12 +95,34 @@ pi.on("tool_call", async (event) => {
   // Read file once → evaluateBatch (every edit) → tryAutofix per unique-drift
   //   → if all resolved, mutate event.input and return undefined (native edit runs)
   //   → if any unfixable, block with formatConsolidatedReport
+  //   → TODO(v0.10.0): after native succeeds, tool_result runs the formatter safety net
 });
 
 pi.on("tool_result", async (event) => {
-  // Re-run cascade on current file state; mutate event.content in-place (quiet-tools compat)
+  // Re-run cascade on current file state; mutate event.content in-place (quiet-tools compat).
+  // Future: invoke runFormatter() here when PI_EDIT_GUARD_FORMATTER is set, so the file
+  // lands formatted even when autofix declined (non-uniform, tabs, large drift).
 });
 ```
+
+### Architecture: autofix as fast path, formatter as safety net (v0.10.0 target)
+
+Two layers handle indent drift between model's `newText` and file's actual indent:
+
+1. **Autofix (in-process, deterministic, fast path)** — `src/autofix.ts`. When the cascade finds a `unique-drift` match and the model's `newText` differs from the file block by a **uniform** leading-spaces shift, `tryAutofix` mutates `newText` in place so native edit applies clean content. Handles the ~80% common case with zero subprocess overhead. **Declines** (atomic block) when:
+   - `tab-in-oldtext` / `tab-in-newtext` / `tab-in-file-block` — tabs are not in scope (spaces-only assumption).
+   - `non-uniform-delta` — different non-blank lines need different shifts. Applying uniform shift would corrupt multi-level structure.
+   - `delta-too-large` — `|delta| > 50` exceeds defensive cap.
+   - `line-count-mismatch` — oldText and file block have different line counts.
+   - `missing-text` — oldText/newText empty.
+
+2. **Formatter (subprocess, opt-in safety net)** — `src/format/formatter.ts`. Runs after native edit succeeds when `PI_EDIT_GUARD_FORMATTER` is set. Catches the cases autofix declines (non-uniform, tabs, large drift) by delegating to the project's actual formatter (biome, prettier, black, gofmt, rustfmt). **Best-effort**: formatter not installed, exit non-zero, or timeout → skip with debug-log entry, edit is not blocked.
+
+**Why two layers**: autofix is fast (no subprocess) but conservative (only uniform shifts). The formatter is slow (~100-500ms per file) but handles every case the project's style dictates. The combination gives autofix's speed for the common case and the formatter's coverage for the edge cases, with no behavioral overlap.
+
+### No-op detection (v0.9.0)
+
+When `oldText === newText`, the edit would make no change. Pi's native edit rejects this with a misleading *"No changes made... special characters or text not existing"* message. `evaluateBatch` detects this before the cascade and returns `kind: 'no-op'`. The formatter renders it as a clear, actionable verdict. Atomic semantics: a single no-op blocks the whole batch — the model retries with a real change or removes the edit.
 
 ### CRITICAL: mutate `event.content` in-place, don't return patch
 
@@ -183,6 +205,19 @@ pi
 
 Log entries include `source` (`tool_call` | `tool_result`) and, on `tool_result` with `isError`, `nativeError` so we can see exactly what the model saw. See the README "Debug logging" section for the full triage workflow.
 
+### Post-edit formatter (v0.10.0 — opt-in, no-op stub today)
+
+Optional safety net for cases the autofix declines (non-uniform drift, tabs, large delta). Runs as a subprocess after native edit succeeds. Default unset → no formatter runs, autofix is the only indent correction. Set to a full command or bare alias:
+
+```bash
+PI_EDIT_GUARD_FORMATTER=biome                       # bare alias, resolved per extension
+PI_EDIT_GUARD_FORMATTER=prettier                    # alias → prettier --write
+PI_EDIT_GUARD_FORMATTER="prettier --write"          # full command, file path appended
+PI_EDIT_GUARD_FORMATTER="/usr/local/bin/fmt {file}"  # full path with {file} placeholder
+```
+
+Aliases map by extension: `.ts/.tsx/.js/.jsx/.json/.css/.scss/.graphql/.md → biome`, `.py → black`, `.go → gofmt`, `.rs → rustfmt`. Unknown extensions return null (no formatter runs). Formatter failures (not installed, exit non-zero, timeout) are best-effort: edit is not blocked, the failure is captured in the debug log.
+
 ## Lessons learned (gotchas)
 
 1. **`input.edits[0].oldText`**, NOT `input.oldText`. Pi's edit tool takes an `edits` array. The first attempt of this extension silently no-op'd because of this.
@@ -201,12 +236,12 @@ Log entries include `source` (`tool_call` | `tool_result`) and, on `tool_result`
 
 ## Testing
 
-184 automated tests across 10 modules, plus an end-to-end script that exercises real files in `/tmp`:
+Automated tests across 10 modules, plus an end-to-end script that exercises real files in `/tmp`:
 
 ```bash
 pnpm test                # one-shot (uses node --experimental-strip-types)
 pnpm test:watch          # watch mode
-pnpm run test:autofix    # e2e: real files in /tmp, 8 scenarios
+pnpm run test:e2e        # e2e: real files in /tmp, 9 scenarios (renamed from test:autofix)
 pnpm run typecheck       # tsc --noEmit
 ```
 

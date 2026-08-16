@@ -30,6 +30,7 @@
  * floor of any model invocation.
  */
 
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -39,15 +40,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
-import {
-  getLogPath,
-  isDebugEnabled,
-  shouldLogFull,
-  shouldSaveSnapshots,
-} from './config.ts';
+import { getLogPath, isDebugEnabled, shouldLogFull, shouldSaveSnapshots } from './config.ts';
 
 const PREVIEW_MAX = 200;
 /** Truncate the log file at this size to keep /tmp clean. */
@@ -157,7 +152,7 @@ export function _resetSnapshotCache(): void {
 
 export function appendDebug(event: DebugEvent): void {
   if (!isEnabled()) return;
-  writeLine(JSON.stringify(event) + '\n');
+  writeLine(`${JSON.stringify(event)}\n`);
 }
 
 /**

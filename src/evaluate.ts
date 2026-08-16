@@ -90,15 +90,24 @@ export function evaluateEdit(
 
 export function evaluateBatch(
   fileContent: string,
-  edits: Array<{ oldText?: string }>,
+  edits: Array<{ oldText?: string; newText?: string }>,
   threshold: number,
   maxExamples: number,
 ): EditEvaluation[] {
   return edits.map((edit) => {
     const oldText = edit?.oldText ?? '';
+    const newText = edit?.newText ?? '';
     if (!oldText) {
       // Empty oldText: native edit's own check handles it; treat as no-match.
       return { kind: 'no-match', bestSimilarity: 0, bestBlock: null };
+    }
+    // No-op: identical oldText/newText means there is no edit to make.
+    // Pi's native edit rejects this with a misleading "No changes made...
+    // special characters" message. Detect here and short-circuit with a
+    // clear, model-actionable verdict so the model knows it sent a no-op.
+    // Atomic semantics: a single no-op blocks the whole batch.
+    if (oldText === newText) {
+      return { kind: 'no-op', reason: 'identical-text' };
     }
     return evaluateEdit(fileContent, oldText, threshold, maxExamples);
   });

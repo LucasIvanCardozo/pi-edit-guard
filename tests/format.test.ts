@@ -23,7 +23,11 @@ export function run(): void {
     assertMatch(msg, /Lines 5-7/, 'shows line range');
     assertMatch(msg, /Use these lines verbatim/, 'gives actionable instruction');
     assertMatch(msg, /including leading whitespace/, 'reminds about leading whitespace');
-    assertMatch(msg, /```\n {4}if \(x\) \{\n {6}return y;\n {4}\}\n```/, 'block shows file lines verbatim');
+    assertMatch(
+      msg,
+      /```\n {4}if \(x\) \{\n {6}return y;\n {4}\}\n```/,
+      'block shows file lines verbatim',
+    );
     assert(!msg.includes('[0sp]'), 'no per-line markers in v0.7+ output');
     assert(!msg.includes('sp = spaces, tb = tabs'), 'no indent legend in v0.7+ output');
   }
@@ -164,48 +168,67 @@ export function run(): void {
     assertMatch(report!, /Edit guard: 1 of 1 edit has issues/, 'singular grammar');
   }
 
-      section('format: formatCandidate with decline hint (each reason)');
-      {
-        // Each AutofixDeclineReason produces a specific, actionable hint.
-        const lines = ['    return 1;'];
-        const cases = [
-          ['missing-text',         { reason: 'missing-text' },                     /oldText or newText was empty/],
-          ['line-count-mismatch',  { reason: 'line-count-mismatch', mismatch: { model: 3, file: 4 } }, /oldText has 3 line\(s\) but the file block has 4/],
-          ['tab-in-oldtext',       { reason: 'tab-in-oldtext', tabLine: 2 },        /tab character detected in oldText at line 3/],
-          ['tab-in-newtext',       { reason: 'tab-in-newtext', tabLine: 0 },        /tab character detected in newText at line 1/],
-          ['tab-in-file-block',    { reason: 'tab-in-file-block', tabLine: 5 },     /file uses tabs/],
-          ['non-uniform-delta',    { reason: 'non-uniform-delta', deltaLine: 2 },   /indent shift is not uniform.*mismatch at line 3/],
-          ['zero-delta',           { reason: 'zero-delta' },                       /oldText already matches the file/],
-          ['delta-too-large',      { reason: 'delta-too-large', absDelta: 80 },    /\|delta\|=80 exceeds the .50 defensive cap/],
-        ];
-        for (const [label, decline, regex] of cases) {
-          const msg = formatCandidate(5, lines, 'indentation', decline);
-          assertMatch(msg, regex, 'shows specific hint for ' + label);
-          assertMatch(msg, /Hint: autofix declined/, 'starts with Hint: prefix (' + label + ')');
-        }
-      }
+  section('format: formatCandidate with decline hint (each reason)');
+  {
+    // Each AutofixDeclineReason produces a specific, actionable hint.
+    const lines = ['    return 1;'];
+    const cases = [
+      ['missing-text', { reason: 'missing-text' }, /oldText or newText was empty/],
+      [
+        'line-count-mismatch',
+        { reason: 'line-count-mismatch', mismatch: { model: 3, file: 4 } },
+        /oldText has 3 line\(s\) but the file block has 4/,
+      ],
+      [
+        'tab-in-oldtext',
+        { reason: 'tab-in-oldtext', tabLine: 2 },
+        /tab character detected in oldText at line 3/,
+      ],
+      [
+        'tab-in-newtext',
+        { reason: 'tab-in-newtext', tabLine: 0 },
+        /tab character detected in newText at line 1/,
+      ],
+      ['tab-in-file-block', { reason: 'tab-in-file-block', tabLine: 5 }, /file uses tabs/],
+      [
+        'non-uniform-delta',
+        { reason: 'non-uniform-delta', deltaLine: 2 },
+        /indent shift is not uniform.*mismatch at line 3/,
+      ],
+      ['zero-delta', { reason: 'zero-delta' }, /oldText already matches the file/],
+      [
+        'delta-too-large',
+        { reason: 'delta-too-large', absDelta: 80 },
+        /\|delta\|=80 exceeds the .50 defensive cap/,
+      ],
+    ];
+    for (const [label, decline, regex] of cases) {
+      const msg = formatCandidate(5, lines, 'indentation', decline);
+      assertMatch(msg, regex, `shows specific hint for ${label}`);
+      assertMatch(msg, /Hint: autofix declined/, `starts with Hint: prefix (${label})`);
+    }
+  }
 
-      section('format: formatCandidate without decline (backwards compat)');
-      {
-        // When decline is omitted, output should match v0.7+ behavior:
-        // no hint line, no '(Hint:' anywhere.
-        const msg = formatCandidate(5, ['    return 1;'], 'indentation');
-        assert(!msg.includes('(Hint:'), 'no hint line when decline is undefined');
-        assertMatch(msg, /Indentation in your oldText didn't match/, 'still shows generic header');
-      }
+  section('format: formatCandidate without decline (backwards compat)');
+  {
+    // When decline is omitted, output should match v0.7+ behavior:
+    // no hint line, no '(Hint:' anywhere.
+    const msg = formatCandidate(5, ['    return 1;'], 'indentation');
+    assert(!msg.includes('(Hint:'), 'no hint line when decline is undefined');
+    assertMatch(msg, /Indentation in your oldText didn't match/, 'still shows generic header');
+  }
 
-      section('format: formatConsolidatedReport includes decline hint');
+  section('format: formatConsolidatedReport includes decline hint');
+  {
+    const evals = [
       {
-        const evals = [
-          {
-            kind: 'unique-drift',
-            block: { startLine: 5, lines: ['    return 1;'] },
-            decline: { reason: 'tab-in-newtext', tabLine: 0 },
-          },
-        ];
-        const report = formatConsolidatedReport(evals, 1, THRESHOLD, HINT_MIN);
-        assertMatch(report, /Hint: autofix declined/, 'decline hint appears in consolidated report');
-        assertMatch(report, /tab character detected in newText at line 1/, 'specific hint text');
-      }
-
+        kind: 'unique-drift',
+        block: { startLine: 5, lines: ['    return 1;'] },
+        decline: { reason: 'tab-in-newtext', tabLine: 0 },
+      },
+    ];
+    const report = formatConsolidatedReport(evals, 1, THRESHOLD, HINT_MIN);
+    assertMatch(report, /Hint: autofix declined/, 'decline hint appears in consolidated report');
+    assertMatch(report, /tab character detected in newText at line 1/, 'specific hint text');
+  }
 }

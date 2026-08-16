@@ -37,6 +37,8 @@ export function formatEvaluationSection(
       return `${header} ${formatAmbiguousMessage(evaluation.count, evaluation.examples, threshold)}`;
     case 'no-match':
       return `${header} ${formatNoMatchMessage(evaluation.bestSimilarity, threshold, evaluation.bestBlock, hintMin)}`;
+    case 'no-op':
+      return `${header} No change: oldText and newText are identical. Modify newText to make a real change, or remove this edit from the batch.`;
   }
 }
 

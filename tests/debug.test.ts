@@ -14,7 +14,7 @@
  *   4. Snapshot dedupe by sha, cap by count, custom log path, FS error tolerance.
  */
 
-import { existsSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import {
@@ -73,27 +73,25 @@ function readLogLines(): Array<Record<string, unknown>> {
 
 export function run(): void {
   section('debug: ON by default; opt-out via PI_EDIT_GUARD_DEBUG=0');
-  {
-    clearLog();
-    withEnv('PI_EDIT_GUARD_DEBUG', undefined, () => {
-      appendDebug({
-        timestamp: '2024-01-01T00:00:00Z',
-        edits: [],
-        result: 'pass',
-      });
+  clearLog();
+  withEnv('PI_EDIT_GUARD_DEBUG', undefined, () => {
+    appendDebug({
+      timestamp: '2024-01-01T00:00:00Z',
+      edits: [],
+      result: 'pass',
     });
-    assert(existsSync(LOG_PATH), 'log file created when env unset (default on)');
+  });
+  assert(existsSync(LOG_PATH), 'log file created when env unset (default on)');
 
-    clearLog();
-    withEnv('PI_EDIT_GUARD_DEBUG', '0', () => {
-      appendDebug({
-        timestamp: '2024-01-01T00:00:00Z',
-        edits: [],
-        result: 'pass',
-      });
+  clearLog();
+  withEnv('PI_EDIT_GUARD_DEBUG', '0', () => {
+    appendDebug({
+      timestamp: '2024-01-01T00:00:00Z',
+      edits: [],
+      result: 'pass',
     });
-    assert(!existsSync(LOG_PATH), 'log file NOT created when env=0');
-  }
+  });
+  assert(!existsSync(LOG_PATH), 'log file NOT created when env=0');
 
   section('debug: explicit PI_EDIT_GUARD_DEBUG=1 still works (redundant with default)');
   {
@@ -111,19 +109,17 @@ export function run(): void {
   }
 
   section('debug: false and no also disable');
-  {
-    clearLog();
-    withEnv('PI_EDIT_GUARD_DEBUG', 'false', () => {
-      appendDebug({ timestamp: '2024-01-01T00:00:00Z', edits: [], result: 'pass' });
-    });
-    assert(!existsSync(LOG_PATH), 'env=false disables');
+  clearLog();
+  withEnv('PI_EDIT_GUARD_DEBUG', 'false', () => {
+    appendDebug({ timestamp: '2024-01-01T00:00:00Z', edits: [], result: 'pass' });
+  });
+  assert(!existsSync(LOG_PATH), 'env=false disables');
 
-    clearLog();
-    withEnv('PI_EDIT_GUARD_DEBUG', 'no', () => {
-      appendDebug({ timestamp: '2024-01-01T00:00:00Z', edits: [], result: 'pass' });
-    });
-    assert(!existsSync(LOG_PATH), 'env=no disables');
-  }
+  clearLog();
+  withEnv('PI_EDIT_GUARD_DEBUG', 'no', () => {
+    appendDebug({ timestamp: '2024-01-01T00:00:00Z', edits: [], result: 'pass' });
+  });
+  assert(!existsSync(LOG_PATH), 'env=no disables');
 
   section('debug: full content logged by default; PI_EDIT_GUARD_LOG_FULL=0 redacts');
   {
@@ -276,22 +272,20 @@ export function run(): void {
   }
 
   section('debug: snapshot SAVED by default; PI_EDIT_GUARD_LOG_SNAPSHOTS=0 disables');
-  {
-    clearLog();
-    clearSnapshots();
-    withEnv('PI_EDIT_GUARD_LOG_SNAPSHOTS', undefined, () => {
-      const result = saveFileSnapshot('hello world');
-      assert(result !== null, 'returns a path when env unset (default on)');
-      assert(existsSync(result!), 'snapshot file actually created by default');
-    });
+  clearLog();
+  clearSnapshots();
+  withEnv('PI_EDIT_GUARD_LOG_SNAPSHOTS', undefined, () => {
+    const result = saveFileSnapshot('hello world');
+    assert(result !== null, 'returns a path when env unset (default on)');
+    assert(existsSync(result!), 'snapshot file actually created by default');
+  });
 
-    clearSnapshots();
-    withEnv('PI_EDIT_GUARD_LOG_SNAPSHOTS', '0', () => {
-      const result = saveFileSnapshot('hello world');
-      assertEq(result, null, 'returns null when env=0');
-    });
-    assert(!existsSync(SNAPSHOTS_DIR), 'snapshots dir not created when disabled');
-  }
+  clearSnapshots();
+  withEnv('PI_EDIT_GUARD_LOG_SNAPSHOTS', '0', () => {
+    const result = saveFileSnapshot('hello world');
+    assertEq(result, null, 'returns null when env=0');
+  });
+  assert(!existsSync(SNAPSHOTS_DIR), 'snapshots dir not created when disabled');
 
   section('debug: snapshot full content round-trip');
   {
@@ -336,8 +330,12 @@ export function run(): void {
   {
     clearLog();
     const customPath = '/tmp/peg-test-custom-path.log';
-    try { unlinkSync(customPath); } catch {}
-    try { rmSync(join(dirname(customPath), 'snapshots'), { recursive: true, force: true }); } catch {}
+    try {
+      unlinkSync(customPath);
+    } catch {}
+    try {
+      rmSync(join(dirname(customPath), 'snapshots'), { recursive: true, force: true });
+    } catch {}
 
     withEnv('PI_EDIT_GUARD_DEBUG', '1', () => {
       withEnv('PI_EDIT_GUARD_LOG_PATH', customPath, () => {
@@ -347,7 +345,10 @@ export function run(): void {
           result: 'pass',
         });
         const snapPath = saveFileSnapshot('custom-snapshot-content');
-        assert(snapPath!.includes(dirname(customPath)), 'snapshot dir derived from custom log path');
+        assert(
+          snapPath!.includes(dirname(customPath)),
+          'snapshot dir derived from custom log path',
+        );
         assert(existsSync(snapPath!), 'snapshot written under custom path');
       });
     });
@@ -355,26 +356,32 @@ export function run(): void {
     assert(existsSync(customPath), 'log written to custom path');
     assert(!existsSync(LOG_PATH), 'default log path not used');
 
-    try { unlinkSync(customPath); } catch {}
-    try { rmSync(join(dirname(customPath), 'snapshots'), { recursive: true, force: true }); } catch {}
+    try {
+      unlinkSync(customPath);
+    } catch {}
+    try {
+      rmSync(join(dirname(customPath), 'snapshots'), { recursive: true, force: true });
+    } catch {}
   }
 
   section('debug: snapshot handles filesystem errors gracefully');
   {
-    try { rmSync(SNAPSHOTS_DIR, { recursive: true, force: true }); } catch {}
+    try {
+      rmSync(SNAPSHOTS_DIR, { recursive: true, force: true });
+    } catch {}
     writeFileSync(SNAPSHOTS_DIR, 'I am a regular file, not a directory.');
     const result = saveFileSnapshot('cannot-write-here');
     assertEq(result, null, 'returns null when mkdir/write fails');
-    try { unlinkSync(SNAPSHOTS_DIR); } catch {}
+    try {
+      unlinkSync(SNAPSHOTS_DIR);
+    } catch {}
   }
 
   section('debug: helpers expose expected public API');
-  {
-    assert(typeof _resetEnabledCache === 'function', '_resetEnabledCache exported');
-    assert(typeof _resetSnapshotCache === 'function', '_resetSnapshotCache exported');
-    assert(typeof appendDebug === 'function', 'appendDebug exported');
-    assert(typeof describeText === 'function', 'describeText exported');
-    assert(typeof describeFile === 'function', 'describeFile exported');
-    assert(typeof saveFileSnapshot === 'function', 'saveFileSnapshot exported');
-  }
+  assert(typeof _resetEnabledCache === 'function', '_resetEnabledCache exported');
+  assert(typeof _resetSnapshotCache === 'function', '_resetSnapshotCache exported');
+  assert(typeof appendDebug === 'function', 'appendDebug exported');
+  assert(typeof describeText === 'function', 'describeText exported');
+  assert(typeof describeFile === 'function', 'describeFile exported');
+  assert(typeof saveFileSnapshot === 'function', 'saveFileSnapshot exported');
 }

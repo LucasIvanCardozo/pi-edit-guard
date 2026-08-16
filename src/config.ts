@@ -33,7 +33,7 @@ function getFloatEnv(name: string, fallback: number): number {
   return parsed;
 }
 
-function getBoolEnv(name: string): boolean {
+function _getBoolEnv(name: string): boolean {
   const v = process.env[name];
   return v === '1' || v === 'true' || v === 'yes';
 }
@@ -95,4 +95,76 @@ export function shouldLogFull(): boolean {
  */
 export function shouldSaveSnapshots(): boolean {
   return !isEnvFalsy('PI_EDIT_GUARD_LOG_SNAPSHOTS');
+}
+
+/**
+ * Optional post-edit formatter command. When unset (default), no formatter
+ * runs after the edit — the autofix path covers uniform-shift drift, and
+ * non-uniform cases fall through to the consolidated block.
+ *
+ * When set, the guard runs the formatter on the file after every successful
+ * edit batch. This is the "safety net" for cases the autofix declines
+ * (non-uniform-delta, tab-in-newtext, delta-too-large). Two forms:
+ *
+ * - Full command: `prettier --write`, `black --quiet`, `gofmt -w`, etc.
+ *   The file path is appended if no `{file}` placeholder is present.
+ * - Bare alias: `biome`, `prettier`, `black`, `gofmt`, `rustfmt`. Resolved
+ *   by file extension via `resolveFormatterForFile`.
+ *
+ * Set to `0` / `false` / `no` to disable explicitly even if a stale alias
+ * leaks in. Unknown aliases resolve to null (no formatter runs).
+ */
+export function getFormatterCommand(): string | null {
+  const raw = process.env.PI_EDIT_GUARD_FORMATTER;
+  if (!raw) return null;
+  if (raw === '0' || raw === 'false' || raw === 'no') return null;
+  return raw;
+}
+
+/**
+ * Map of file extension → default formatter alias. Used when
+ * `PI_EDIT_GUARD_FORMATTER` is set to a bare alias like `biome`.
+ *
+ * The alias here is the COMMAND NAME (without args). `runFormatter` resolves
+ * it to the actual command per file at call time. Add to this map as the
+ * project supports more languages.
+ */
+const FORMATTER_ALIASES: Record<string, string> = {
+  '.ts': 'biome',
+  '.tsx': 'biome',
+  '.js': 'biome',
+  '.jsx': 'biome',
+  '.mjs': 'biome',
+  '.cjs': 'biome',
+  '.json': 'biome',
+  '.css': 'biome',
+  '.scss': 'biome',
+  '.graphql': 'biome',
+  '.md': 'biome',
+  '.py': 'black',
+  '.go': 'gofmt',
+  '.rs': 'rustfmt',
+};
+
+/**
+ * Resolve the formatter command for a specific file. Returns null when:
+ * - formatter not configured
+ * - extension has no alias (e.g. `.txt`, `.lock`)
+ * - extension is unknown
+ *
+ * For a bare alias (`PI_EDIT_GUARD_FORMATTER=biome`), returns the resolved
+ * command for the file's extension. For a full command
+ * (`PI_EDIT_GUARD_FORMATTER="prettier --write"`), returns the command as-is.
+ */
+export function resolveFormatterForFile(filePath: string): string | null {
+  const cmd = getFormatterCommand();
+  if (!cmd) return null;
+  // Full command (contains spaces or args): use as-is.
+  if (cmd.includes(' ')) return cmd;
+  // Bare alias: look up by extension.
+  const dot = filePath.lastIndexOf('.');
+  if (dot === -1) return null;
+  const ext = filePath.slice(dot).toLowerCase();
+  const resolved = FORMATTER_ALIASES[ext];
+  return resolved ?? null;
 }

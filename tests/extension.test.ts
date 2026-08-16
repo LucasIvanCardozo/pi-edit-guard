@@ -206,9 +206,7 @@ export async function run(): Promise<void> {
       toolName: 'edit',
       input: {
         path: testFile,
-        edits: [
-          { oldText: '    return 1;', newText: '    return 99;' },
-        ],
+        edits: [{ oldText: '    return 1;', newText: '    return 99;' }],
       },
     };
 
