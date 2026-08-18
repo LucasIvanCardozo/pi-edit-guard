@@ -40,6 +40,7 @@ import {
   getMaxExamples,
   getThreshold,
   MAX_FILE_SIZE,
+  shouldUseRawRead,
 } from './config.ts';
 import {
   appendDebug,
@@ -52,6 +53,7 @@ import {
 import { evaluateBatch } from './evaluate.ts';
 import { formatConsolidatedReport, runFormatter } from './format/index.ts';
 import { mutateToolResult } from './mutate.ts';
+import { registerRawReadTool } from './read-override.ts';
 
 type Edit = { oldText?: string; newText?: string };
 type EditInput = { path?: string; edits?: Edit[] };
@@ -222,6 +224,14 @@ function buildDebugEdit(
 }
 
 export default function (pi: ExtensionAPI) {
+  // Layer 0 (opt-in): override the built-in `read` tool so the model receives
+  // file content with exact whitespace (no TUI padding). This prevents the
+  // surrender pattern where the model copies 4-space padding into edit calls.
+  // Opt-out via PI_EDIT_GUARD_RAW_READ=0.
+  if (shouldUseRawRead()) {
+    registerRawReadTool(pi, process.cwd());
+  }
+
   // Layer 1: intercept BEFORE native edit runs.
   pi.on('tool_call', async (event) => {
     if (event.toolName !== GUARDED_TOOL) return;

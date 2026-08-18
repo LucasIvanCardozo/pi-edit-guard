@@ -26,6 +26,7 @@ Multi-file source-only extension. No build step. Pi loads `index.ts` via jiti; `
 index.ts                       entry point (thin barrel)
 src/
 ├── extension.ts               composition root: default export with tool_call/tool_result hooks
+├── read-override.ts          opt-in override of the built-in read tool (PI_EDIT_GUARD_RAW_READ)
 ├── evaluate.ts                evaluateEdit, evaluateBatch (pure cascade)
 ├── autofix.ts                 tryAutofix — pure leading-space shift computation
 ├── mutate.ts                  in-place mutation of tool result events
@@ -51,6 +52,23 @@ AGENTS.md                      this file
 ```
 
 ## Architecture
+
+### Read tool override (Layer -1: TUI padding fix)
+
+The built-in `read` tool renders file content inside `Box(paddingX=1) + Text(paddingX=1)` inside a `Box(paddingX=1)` chat container. Together this prepends ~4 spaces of leading whitespace to every line the model sees — even when the file has 0 spaces.
+
+This caused the surrender pattern: the model copies those 4 phantom spaces into an `edit` call's `oldText`, the edit fails with "Could not find the exact text", the model retries 2-3 times, then gives up and switches to `bash`/`python`.
+
+`pi-edit-guard` ships an opt-in override (`PI_EDIT_GUARD_RAW_READ`, default ON) that:
+
+1. Registers a custom `read` tool with `renderShell: 'self'` — the runtime skips the Box(paddingX=1) wrapper entirely.
+2. `renderCall` returns a minimal `read <path>` header (uses the runtime's `lastComponent` if provided).
+3. `renderResult` returns an empty Component in compact mode (user sees nothing); falls back to a plain-text rendering with truncation notice when expanded or on error.
+4. Reuses the built-in `execute()` via `createReadTool()` so images, syntax-aware truncation, image hints, and auto-resize all work unchanged.
+
+**Trade-off accepted**: the user loses the default visual rendering of file contents. Press Ctrl+O to expand and see content with truncation notices. Syntax highlighting is lost in the expanded view (we can't access the built-in `renderResult` because `createReadTool()` returns the wrapped tool without it). The model still receives the raw content with exact whitespace, which is what matters for `edit` correctness.
+
+**Why we don't try to fix the TUI upstream**: the padding is intentional visual margin in the Pi runtime. Forking Pi to change it would require maintaining a fork indefinitely and convincing upstream to accept the change. The override is a 100-line local fix that solves the root cause for our users.
 
 ### Cascade (per edit)
 
@@ -259,6 +277,7 @@ tests/
 │   ├── normalized.test.ts         # src/matchers/normalized.ts
 │   └── fuzzy.test.ts              # src/matchers/fuzzy.ts
 ├── evaluate.test.ts               # src/evaluate.ts (cascade)
+├── read-override.test.ts          # src/read-override.ts (no-TUI-padding regression)
 ├── format.test.ts                 # src/format/* (all output formats)
 └── extension.test.ts              # src/extension.ts (e2e via jiti)
 

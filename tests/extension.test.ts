@@ -45,6 +45,9 @@ export async function run(): Promise<void> {
           handlers[event].push(handler);
         }
       },
+      registerTool(_tool: unknown): void {
+        // no-op: read override is exercised in tests/read-override.test.ts
+      },
     };
     mod.default(pi);
     assertEq(handlers.tool_call.length, 1, 'registers 1 tool_call handler');
@@ -72,6 +75,9 @@ export async function run(): Promise<void> {
     const pi = {
       on(event: string, handler: (e: unknown) => unknown) {
         if (event === 'tool_call') handlers.push(handler);
+      },
+      registerTool(_tool: unknown): void {
+        // no-op
       },
     };
     mod.default(pi);
@@ -116,6 +122,9 @@ export async function run(): Promise<void> {
       on(event: string, handler: (e: unknown) => unknown) {
         if (event === 'tool_call') handlers.push(handler);
       },
+      registerTool(_tool: unknown): void {
+        // no-op
+      },
     };
     mod.default(pi);
 
@@ -154,6 +163,9 @@ export async function run(): Promise<void> {
     const pi = {
       on(event: string, handler: (e: unknown) => unknown) {
         if (event === 'tool_call') handlers.push(handler);
+      },
+      registerTool(_tool: unknown): void {
+        // no-op
       },
     };
     mod.default(pi);
@@ -199,6 +211,9 @@ export async function run(): Promise<void> {
       on(event: string, handler: (e: unknown) => unknown) {
         if (event === 'tool_call') handlers.push(handler);
       },
+      registerTool(_tool: unknown): void {
+        // no-op
+      },
     };
     mod.default(pi);
 
@@ -234,6 +249,9 @@ export async function run(): Promise<void> {
       on(event: string, handler: (e: unknown) => unknown) {
         if (event === 'tool_call') handlers.push(handler);
       },
+      registerTool(_tool: unknown): void {
+        // no-op
+      },
     };
     mod.default(pi);
 
@@ -258,6 +276,9 @@ export async function run(): Promise<void> {
       on(event: string, handler: (e: unknown) => unknown) {
         if (event === 'tool_call') handlers.push(handler);
       },
+      registerTool(_tool: unknown): void {
+        // no-op
+      },
     };
     mod.default(pi);
 
@@ -275,6 +296,9 @@ export async function run(): Promise<void> {
     const pi = {
       on(event: string, handler: (e: unknown) => unknown) {
         if (event === 'tool_call') handlers.push(handler);
+      },
+      registerTool(_tool: unknown): void {
+        // no-op
       },
     };
     mod.default(pi);
@@ -297,6 +321,9 @@ export async function run(): Promise<void> {
     const pi = {
       on(event: string, handler: (e: unknown) => unknown) {
         if (event === 'tool_result') resultHandlers.push(handler);
+      },
+      registerTool(_tool: unknown): void {
+        // no-op
       },
     };
     mod.default(pi);
@@ -335,6 +362,9 @@ export async function run(): Promise<void> {
     const pi = {
       on(event: string, handler: (e: unknown) => unknown) {
         if (event === 'tool_result') resultHandlers.push(handler);
+      },
+      registerTool(_tool: unknown): void {
+        // no-op
       },
     };
     mod.default(pi);

@@ -97,6 +97,29 @@ export function shouldSaveSnapshots(): boolean {
   return !isEnvFalsy('PI_EDIT_GUARD_LOG_SNAPSHOTS');
 }
 
+
+/**
+ * When true, the built-in `read` tool is overridden with a minimal renderer
+ * that hides the file content by default. The user sees only `read <path>`
+ * (no syntax highlighting, no content preview); the model receives the
+ * full, unaltered file content via the built-in `execute()` path.
+ *
+ * This is the fix for the TUI padding problem: the built-in render adds ~4
+ * spaces of leading whitespace per line that the model mistakes for actual
+ * file content. When the model copies those 4 spaces into an `edit` call's
+ * `oldText`, the edit fails because the file doesn't have them. The raw
+ * override eliminates the padding at the source instead of relying on the
+ * guard to silently fix it after the fact.
+ *
+ * Default ON (opt-out via `PI_EDIT_GUARD_RAW_READ=0`). Reasoning: this is
+ * the primary fix for the surrender pattern. Users who want the built-in
+ * visual rendering can opt out. The user can still see the file content
+ * by pressing Ctrl+O to expand, or by using bash/grep for visual reads.
+ */
+export function shouldUseRawRead(): boolean {
+  return !isEnvFalsy('PI_EDIT_GUARD_RAW_READ');
+}
+
 /**
  * Optional post-edit formatter command. When unset (default), no formatter
  * runs after the edit — the autofix path covers uniform-shift drift, and
