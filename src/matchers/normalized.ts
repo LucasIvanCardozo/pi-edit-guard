@@ -44,8 +44,12 @@ export function findNormalizedMatches(
 
   // Empty lines on either side are not a match: a model whose `oldText`
   // is shorter than the file block shouldn't match here. The cascade
-  // already has ok-literal for that.
-  if (needleLines.some((l) => l === '')) return [];
+  // already has ok-literal for that. We reject empty FIRST or LAST line
+  // of the needle (likely truncated/malformed), but allow blank lines
+  // in the middle — those are legitimate separators between groups of
+  // statements (e.g. a function body with a blank line between const
+  // groups, which is a very common pattern).
+  if (needleLines[0] === '' || needleLines[needleLines.length - 1] === '') return [];
 
   const needleLineCount = needleLines.length;
   const matches: Array<{ startLine: number; matchedLines: string[] }> = [];

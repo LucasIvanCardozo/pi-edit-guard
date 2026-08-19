@@ -82,4 +82,61 @@ export function run(): void {
     assertEq(matches.length, 1, 'no cross-line false match');
     assertEq(matches[0].startLine, 3, 'real match is on lines 3-4');
   }
+
+  section('matchers/normalized: allows empty line in the MIDDLE of needle');
+  {
+    // Regression: v0.12.x rejected ANY empty line in the needle, even when
+    // the empty line was a legitimate separator between two groups of
+    // statements (e.g. a function body with a blank line between const
+    // groups). The cascade fell through to fuzzy-match, which then blocked
+    // the edit. Real-world repro: a Next.js model sending a 6-line oldText
+    // to a React function body where lines 1-4 are const declarations,
+    // line 5 is blank, and line 6 is another const — exactly the case.
+    //
+    // The function takes the already-NORMALIZED needle (the cascade does
+    // `findNormalizedMatches(file, normalizeText(oldText))`), so we pass
+    // a needle with no leading whitespace.
+    const file = [
+      'export const X = () => {',
+      '  const a = 1;',
+      '  const b = 2;',
+      '  const c = 3;',
+      '',
+      '  const d = 4;',
+      '};',
+    ].join('\n');
+    // Normalized form (cascade input): all leading whitespace stripped.
+    const needle = [
+      'const a = 1;',
+      'const b = 2;',
+      'const c = 3;',
+      '',
+      'const d = 4;',
+    ].join('\n');
+    const matches = findNormalizedMatches(file, needle);
+    assertEq(matches.length, 1, 'matches despite internal blank line');
+    assertEq(matches[0].startLine, 2, 'starts at file line 2 (after export wrapper)');
+  }
+
+  section('matchers/normalized: still rejects empty FIRST line');
+  {
+    // Defensive: a model whose oldText starts with a blank line is
+    // probably truncated or malformed — the cascade should reject to
+    // avoid false-positive partial matches.
+    const file = '  const a = 1;\n  const b = 2;\n';
+    const needle = '\n  const b = 2;';
+    const matches = findNormalizedMatches(file, needle);
+    assertEq(matches.length, 0, 'empty first line still rejected (avoids partial match)');
+  }
+
+  section('matchers/normalized: still rejects empty LAST line');
+  {
+    // Same defensive intent: trailing blank line in the needle is
+    // suspicious — it usually means the model wrote a trailing newline
+    // that doesn't correspond to a real line in the file.
+    const file = '  const a = 1;\n  const b = 2;\n';
+    const needle = '  const a = 1;\n';
+    const matches = findNormalizedMatches(file, needle);
+    assertEq(matches.length, 0, 'empty last line still rejected');
+  }
 }
