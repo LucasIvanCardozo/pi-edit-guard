@@ -14,15 +14,6 @@ pi install npm:@lucascardozo/pi-edit-guard
 
 ## What it does
 
-### Read tool override (opt-in, default ON)
-
-The built-in `read` tool renders file content inside `Box(paddingX=1) + Text(paddingX=1)`. The chat message container adds another layer. Together this prepends ~4 spaces of leading whitespace to every line of the file the model sees - even when the file has 0 spaces.
-
-When the model copies those 4 phantom spaces into an `edit` call's `oldText`, the edit fails with "Could not find the exact text". After 2-3 retries, the model gives up and switches to `bash`/`python` to write the file. **This is the surrender pattern.**
-
-`pi-edit-guard` overrides the `read` tool so the user sees only `read <path>` (a minimal call header, no content), while the model receives the raw file content with **exact whitespace** via the built-in `execute()` (which still handles images, syntax-aware truncation, image hints, and auto-resize unchanged).
-
-Opt-out with `PI_EDIT_GUARD_RAW_READ=0` to restore the built-in visual rendering. Press Ctrl+O in interactive mode to expand and see content with truncation notices.
 
 ### Two-layer protection
 
@@ -47,7 +38,7 @@ For each `oldText` in the batch:
 
 - `oldText` is replaced with the file's verbatim block (the cascade already guarantees this matches).
 - `newText` is shifted by the same delta, per non-blank line.
-- For the cases auto-fix declines (non-uniform drift, tabs, large delta), the model gets a clear verdict + the file's verbatim block. Future versions will optionally delegate those to a configured post-edit formatter (`PI_EDIT_GUARD_FORMATTER`, see Configuration table) as a safety net.
+- For the cases auto-fix declines (non-uniform drift, tabs, large delta), the model gets a clear verdict + the file's verbatim block. To opt out of autofix entirely (e.g. when running `pi-autoformat` alongside), set `PI_EDIT_GUARD_TRUST_FORMATTER=1`; the guard only validates, then passes `newText` verbatim to native edit (see Configuration table).
 
 **No-op detection** — when `oldText === newText`, the edit would make no change. Pi's native edit rejects this with a misleading *"No changes made... special characters or text not existing"* message. `pi-edit-guard` catches it before the cascade and returns a clear, actionable verdict so the model knows it sent a no-op.
 - The model receives a normal edit-success result. No error message, no retry cost.
@@ -237,8 +228,7 @@ Snapshots go to `./snapshots/` (i.e. `<dirname(log-path)>/snapshots/`).
 | `PI_EDIT_GUARD_LOG_PATH` | `/tmp/pi-edit-guard-<pid>.log` | n/a | Where the NDJSON log goes. Snapshot dir is `<dirname>/snapshots/`. |
 | `PI_EDIT_GUARD_LOG_FULL` | **ON** | `=0` | Log full `oldText`/`newText` content instead of 200-char preview. |
 | `PI_EDIT_GUARD_LOG_SNAPSHOTS` | **ON** | `=0` | Save a verbatim copy of the file at edit time to `<log-dir>/snapshots/<sha>.orig`. Dedupe by sha, capped at 200 files / 100MB. |
-| `PI_EDIT_GUARD_RAW_READ` | **ON** | `=0` | Override the built-in `read` tool: user sees only `read <path>`, model gets the raw file content with exact whitespace. Fixes the TUI-padding-induced surrender pattern (model copying 4-space padding into edit calls). Press Ctrl+O to expand and see content. |
-| `PI_EDIT_GUARD_FORMATTER` | unset | `=0` | Post-edit formatter command (v0.10.0). Bare alias (`biome`, `prettier`, `black`, `gofmt`, `rustfmt`) or full command (`"prettier --write"`). Optional safety net for cases autofix declines. |
+| `PI_EDIT_GUARD_TRUST_FORMATTER` | unset | `=0` | Opt-in trust mode: skip autofix, pass `newText` verbatim to native edit. Designed for projects that run an external formatter (`pi-autoformat`, biome, prettier, etc.) alongside this extension. The cascade still validates; ambiguous/fuzzy/no-match still block. Also registered as `--trust-formatter` CLI flag for discoverability. |
 
 All three log flags default to ON. Set the env var to `0`, `false`, or `no` to disable that flag. `1` / `true` / `yes` still works (redundant with default but explicit).
 

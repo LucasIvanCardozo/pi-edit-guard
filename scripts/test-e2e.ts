@@ -73,6 +73,9 @@ async function simulateToolCall(
     on(event: string, handler: (e: unknown) => unknown) {
       if (event === 'tool_call') handlers.push(handler);
     },
+    registerFlag(_flag: unknown): void {
+      // no-op: only used for discoverability
+    },
   };
   extension(pi);
 

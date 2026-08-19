@@ -3,7 +3,8 @@
  *
  * Each test module exports a `run()` function. We call them in a
  * deterministic order: matchers first (lowest-level), then evaluate, then
- * format, then extension (e2e). The summary is printed at the end.
+ * format, then trust-formatter, then extension (e2e). The summary is
+ * printed at the end.
  *
  * If any test fails, the process exits with code 1.
  */
@@ -18,11 +19,10 @@ import * as formatTests from './format.test.ts';
 import * as fuzzyMatcherTests from './matchers/fuzzy.test.ts';
 import * as literalMatcherTests from './matchers/literal.test.ts';
 import * as normalizedMatcherTests from './matchers/normalized.test.ts';
-import * as readOverrideTests from './read-override.test.ts';
+import * as trustFormatterTests from './trust-formatter.test.ts';
 import * as whitespaceTests from './whitespace.test.ts';
 
 whitespaceTests.run();
-readOverrideTests.run();
 debugTests.run();
 blockTests.run();
 literalMatcherTests.run();
@@ -31,6 +31,7 @@ fuzzyMatcherTests.run();
 autofixTests.run();
 evaluateTests.run();
 formatTests.run();
+await trustFormatterTests.run();
 await extensionTests.run();
 
 const { failed } = printSummary();

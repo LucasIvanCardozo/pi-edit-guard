@@ -19,7 +19,6 @@ import { dirname, join } from 'node:path';
 
 import {
   _resetEnabledCache,
-  _resetSnapshotCache,
   appendDebug,
   describeFile,
   describeText,
@@ -35,14 +34,12 @@ function withEnv(name: string, value: string | undefined, fn: () => void): void 
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
   _resetEnabledCache();
-  _resetSnapshotCache();
   try {
     fn();
   } finally {
     if (prev === undefined) delete process.env[name];
     else process.env[name] = prev;
     _resetEnabledCache();
-    _resetSnapshotCache();
   }
 }
 
@@ -379,7 +376,6 @@ export function run(): void {
 
   section('debug: helpers expose expected public API');
   assert(typeof _resetEnabledCache === 'function', '_resetEnabledCache exported');
-  assert(typeof _resetSnapshotCache === 'function', '_resetSnapshotCache exported');
   assert(typeof appendDebug === 'function', 'appendDebug exported');
   assert(typeof describeText === 'function', 'describeText exported');
   assert(typeof describeFile === 'function', 'describeFile exported');

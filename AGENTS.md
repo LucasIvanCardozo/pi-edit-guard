@@ -13,7 +13,7 @@ Fixes the most common LLM failure mode in code editing: the model counts spaces 
 
 ## Status
 
-- **v0.7.2 in development** (decline autofix when newText has leading tabs)
+- **v0.11.0 in development** (trust-formatter opt-in mode + formatter subprocess removed; read override removed)
 - Install: `pi install npm:@lucascardozo/pi-edit-guard`
 - Repo: https://github.com/LucasIvanCardozo/pi-edit-guard
 - License: MIT
@@ -26,7 +26,6 @@ Multi-file source-only extension. No build step. Pi loads `index.ts` via jiti; `
 index.ts                       entry point (thin barrel)
 src/
 ├── extension.ts               composition root: default export with tool_call/tool_result hooks
-├── read-override.ts          opt-in override of the built-in read tool (PI_EDIT_GUARD_RAW_READ)
 ├── evaluate.ts                evaluateEdit, evaluateBatch (pure cascade)
 ├── autofix.ts                 tryAutofix — pure leading-space shift computation
 ├── mutate.ts                  in-place mutation of tool result events
@@ -52,27 +51,6 @@ AGENTS.md                      this file
 ```
 
 ## Architecture
-
-### Read tool override (Layer -1: TUI padding fix)
-
-The built-in `read` tool renders file content inside `Box(paddingX=1) + Text(paddingX=1)` inside a `Box(paddingX=1)` chat container. Together this prepends ~4 spaces of leading whitespace to every line the model sees — even when the file has 0 spaces.
-
-This caused the surrender pattern: the model copies those 4 phantom spaces into an `edit` call's `oldText`, the edit fails with "Could not find the exact text", the model retries 2-3 times, then gives up and switches to `bash`/`python`.
-
-`pi-edit-guard` ships an opt-in override (`PI_EDIT_GUARD_RAW_READ`, default ON) that:
-
-1. Registers a custom `read` tool with `renderShell: 'self'` — the runtime skips the Box(paddingX=1) wrapper entirely.
-2. `renderCall` returns a minimal `read <path>` header (uses the runtime's `lastComponent` if provided).
-3. `renderResult` returns an empty Component in compact mode (user sees nothing); falls back to a plain-text rendering with truncation notice when expanded or on error.
-4. Reuses the built-in `execute()` via `createReadTool()` so images, syntax-aware truncation, image hints, and auto-resize all work unchanged.
-
-**Trade-off accepted**: the user loses the default visual rendering of file contents. Press Ctrl+O to expand and see content with truncation notices. Syntax highlighting is lost in the expanded view (we can't access the built-in `renderResult` because `createReadTool()` returns the wrapped tool without it). The model still receives the raw content with exact whitespace, which is what matters for `edit` correctness.
-
-**Why we don't try to fix the TUI upstream**: the padding is intentional visual margin in the Pi runtime. Forking Pi to change it would require maintaining a fork indefinitely and convincing upstream to accept the change. The override is a 100-line local fix that solves the root cause for our users.
-
-### Cascade (per edit)
-
-Each edit is graded through three steps:
 
 1. **Literal line-anchored count** — match must start at the beginning of a line. Bug fix vs v0.5.0: the old `split().length - 1` counted substrings, so `"  return 1;"` would match inside `"    return 1;"` as a false positive.
 2. **Whitespace-normalized exact match** — strip leading spaces per line, look for exact match.
@@ -113,30 +91,27 @@ pi.on("tool_call", async (event) => {
   // Read file once → evaluateBatch (every edit) → tryAutofix per unique-drift
   //   → if all resolved, mutate event.input and return undefined (native edit runs)
   //   → if any unfixable, block with formatConsolidatedReport
-  //   → TODO(v0.10.0): after native succeeds, tool_result runs the formatter safety net
+  //   → if all resolved, mutate event.input and return undefined (native edit runs)
+  //   → if any unfixable, block with formatConsolidatedReport
+  //   → in trust-formatter mode, autofix is skipped; cascade still validates
 });
 
 pi.on("tool_result", async (event) => {
   // Re-run cascade on current file state; mutate event.content in-place (quiet-tools compat).
-  // Future: invoke runFormatter() here when PI_EDIT_GUARD_FORMATTER is set, so the file
-  // lands formatted even when autofix declined (non-uniform, tabs, large drift).
+  // In trust-formatter mode, the cascade skips autofix and passes newText verbatim.
 });
 ```
 
 ### Architecture: autofix as fast path, formatter as safety net (v0.10.0 target)
 
-Two layers handle indent drift between model's `newText` and file's actual indent:
+The autofix layer is the **in-process, deterministic, fast path** for indent drift. It handles the ~80% common case with zero subprocess overhead. In trust-formatter mode (opt-in), autofix is skipped entirely and the cascade passes `newText` verbatim — designed for projects that run an external formatter (`pi-autoformat`, biome, prettier, etc.) alongside.
 
-1. **Autofix (in-process, deterministic, fast path)** — `src/autofix.ts`. When the cascade finds a `unique-drift` match and the model's `newText` differs from the file block by a **uniform** leading-spaces shift, `tryAutofix` mutates `newText` in place so native edit applies clean content. Handles the ~80% common case with zero subprocess overhead. **Declines** (atomic block) when:
-   - `tab-in-oldtext` / `tab-in-newtext` / `tab-in-file-block` — tabs are not in scope (spaces-only assumption).
-   - `non-uniform-delta` — different non-blank lines need different shifts. Applying uniform shift would corrupt multi-level structure.
-   - `delta-too-large` — `|delta| > 50` exceeds defensive cap.
-   - `line-count-mismatch` — oldText and file block have different line counts.
-   - `missing-text` — oldText/newText empty.
-
-2. **Formatter (subprocess, opt-in safety net)** — `src/format/formatter.ts`. Runs after native edit succeeds when `PI_EDIT_GUARD_FORMATTER` is set. Catches the cases autofix declines (non-uniform, tabs, large drift) by delegating to the project's actual formatter (biome, prettier, black, gofmt, rustfmt). **Best-effort**: formatter not installed, exit non-zero, or timeout → skip with debug-log entry, edit is not blocked.
-
-**Why two layers**: autofix is fast (no subprocess) but conservative (only uniform shifts). The formatter is slow (~100-500ms per file) but handles every case the project's style dictates. The combination gives autofix's speed for the common case and the formatter's coverage for the edge cases, with no behavioral overlap.
+Autofix declines (atomic block) when:
+- `tab-in-oldtext` / `tab-in-newtext` / `tab-in-file-block` — tabs are not in scope (spaces-only assumption).
+- `non-uniform-delta` — different non-blank lines need different shifts. Applying uniform shift would corrupt multi-level structure.
+- `delta-too-large` — `|delta| > 50` exceeds defensive cap.
+- `line-count-mismatch` — oldText and file block have different line counts.
+- `missing-text` — oldText/newText empty.
 
 ### No-op detection (v0.9.0)
 
@@ -223,18 +198,24 @@ pi
 
 Log entries include `source` (`tool_call` | `tool_result`) and, on `tool_result` with `isError`, `nativeError` so we can see exactly what the model saw. See the README "Debug logging" section for the full triage workflow.
 
-### Post-edit formatter (v0.10.0 — opt-in, no-op stub today)
+### Trust-formatter mode (v0.11.0 — opt-in)
 
-Optional safety net for cases the autofix declines (non-uniform drift, tabs, large delta). Runs as a subprocess after native edit succeeds. Default unset → no formatter runs, autofix is the only indent correction. Set to a full command or bare alias:
+When `PI_EDIT_GUARD_TRUST_FORMATTER=1` (or `--trust-formatter`), the guard skips the autofix layer entirely. The cascade still validates that there's a match, but in trust mode:
+
+- `ok-literal` → pass through (no change)
+- `unique-drift` (any kind — uniform, non-uniform, tabs, large delta) → pass through with the model's `newText` verbatim. The external formatter (e.g. `pi-autoformat`, biome, prettier) running alongside is responsible for normalizing indent drift.
+- `ambiguous-*` / `fuzzy-match` / `no-match` → still blocked with the consolidated report. The cascade validates; if there's no safe match, the model has to fix its `oldText` and retry.
+
+Designed for projects that run `pi-autoformat` (or any other post-edit formatter) alongside this extension. Decouples the indent-correction responsibility: the extension only validates that there IS a match; the formatter handles drift.
 
 ```bash
-PI_EDIT_GUARD_FORMATTER=biome                       # bare alias, resolved per extension
-PI_EDIT_GUARD_FORMATTER=prettier                    # alias → prettier --write
-PI_EDIT_GUARD_FORMATTER="prettier --write"          # full command, file path appended
-PI_EDIT_GUARD_FORMATTER="/usr/local/bin/fmt {file}"  # full path with {file} placeholder
+PI_EDIT_GUARD_TRUST_FORMATTER=1 pi   # opt-in
+pi --trust-formatter                  # CLI flag (registered for discoverability)
 ```
 
-Aliases map by extension: `.ts/.tsx/.js/.jsx/.json/.css/.scss/.graphql/.md → biome`, `.py → black`, `.go → gofmt`, `.rs → rustfmt`. Unknown extensions return null (no formatter runs). Formatter failures (not installed, exit non-zero, timeout) are best-effort: edit is not blocked, the failure is captured in the debug log.
+The flag is registered with `pi.registerFlag('trust-formatter', { type: 'boolean', default: false })` so it shows in `/help` and CLI completions. The runtime value comes from the env var (read by `shouldTrustFormatter()` at startup); the CLI flag is accepted but not auto-bound to the runtime — known limitation to avoid threading the flag value through every code path.
+
+Default OFF; no behavior change for users not setting it.
 
 ## Lessons learned (gotchas)
 
@@ -277,7 +258,6 @@ tests/
 │   ├── normalized.test.ts         # src/matchers/normalized.ts
 │   └── fuzzy.test.ts              # src/matchers/fuzzy.ts
 ├── evaluate.test.ts               # src/evaluate.ts (cascade)
-├── read-override.test.ts          # src/read-override.ts (no-TUI-padding regression)
 ├── format.test.ts                 # src/format/* (all output formats)
 └── extension.test.ts              # src/extension.ts (e2e via jiti)
 

@@ -143,13 +143,6 @@ export function _resetEnabledCache(): void {
   enabledCached = undefined;
 }
 
-/** Test hook: clear the snapshot env-var cache so tests can flip it. */
-export function _resetSnapshotCache(): void {
-  // The snapshot module currently re-reads env on every call (no cache),
-  // but expose this helper for symmetry with _resetEnabledCache and for
-  // future caching. No-op today; kept for API stability.
-}
-
 export function appendDebug(event: DebugEvent): void {
   if (!isEnabled()) return;
   writeLine(`${JSON.stringify(event)}\n`);

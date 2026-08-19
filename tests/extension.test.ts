@@ -46,8 +46,11 @@ export async function run(): Promise<void> {
         }
       },
       registerTool(_tool: unknown): void {
-        // no-op: read override is exercised in tests/read-override.test.ts
+        // no-op: tests register only call hooks
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
     assertEq(handlers.tool_call.length, 1, 'registers 1 tool_call handler');
@@ -79,6 +82,9 @@ export async function run(): Promise<void> {
       registerTool(_tool: unknown): void {
         // no-op
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
 
@@ -125,6 +131,9 @@ export async function run(): Promise<void> {
       registerTool(_tool: unknown): void {
         // no-op
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
 
@@ -167,6 +176,9 @@ export async function run(): Promise<void> {
       registerTool(_tool: unknown): void {
         // no-op
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
 
@@ -214,6 +226,9 @@ export async function run(): Promise<void> {
       registerTool(_tool: unknown): void {
         // no-op
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
 
@@ -252,6 +267,9 @@ export async function run(): Promise<void> {
       registerTool(_tool: unknown): void {
         // no-op
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
 
@@ -279,6 +297,9 @@ export async function run(): Promise<void> {
       registerTool(_tool: unknown): void {
         // no-op
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
 
@@ -300,6 +321,9 @@ export async function run(): Promise<void> {
       registerTool(_tool: unknown): void {
         // no-op
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
 
@@ -325,6 +349,9 @@ export async function run(): Promise<void> {
       registerTool(_tool: unknown): void {
         // no-op
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
 
@@ -366,6 +393,9 @@ export async function run(): Promise<void> {
       registerTool(_tool: unknown): void {
         // no-op
       },
+          registerFlag(_flag: unknown): void {
+            // no-op: stub for jiti loading
+          },
     };
     mod.default(pi);
 

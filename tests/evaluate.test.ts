@@ -1,4 +1,4 @@
-import { evaluateBatch, evaluateEdit } from '../src/evaluate.ts';
+import { evaluateBatch } from '../src/evaluate.ts';
 import { assert, assertEq, section } from './_framework.ts';
 
 const THRESHOLD = 0.9;

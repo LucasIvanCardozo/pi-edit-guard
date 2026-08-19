@@ -99,95 +99,27 @@ export function shouldSaveSnapshots(): boolean {
 
 
 /**
- * When true, the built-in `read` tool is overridden with a minimal renderer
- * that hides the file content by default. The user sees only `read <path>`
- * (no syntax highlighting, no content preview); the model receives the
- * full, unaltered file content via the built-in `execute()` path.
+ * When true, the guard skips the autofix layer and passes `newText` verbatim
+ * to native edit. Designed for projects that run an external formatter
+ * (e.g. `pi-autoformat`, biome, prettier) after every edit batch — the
+ * formatter cleans up indent drift that autofix would otherwise handle.
  *
- * This is the fix for the TUI padding problem: the built-in render adds ~4
- * spaces of leading whitespace per line that the model mistakes for actual
- * file content. When the model copies those 4 spaces into an `edit` call's
- * `oldText`, the edit fails because the file doesn't have them. The raw
- * override eliminates the padding at the source instead of relying on the
- * guard to silently fix it after the fact.
+ * Behavior in trust mode:
+ * - `ok-literal`: pass through (no change)
+ * - `unique-drift` (any kind, including non-uniform + tabs): pass through
+ *   with whatever `newText` the model wrote. The external formatter will
+ *   normalize the indent.
+ * - `ambiguous-*` / `fuzzy-match` / `no-match`: still blocked with the
+ *   consolidated report. The cascade validates; if there's no safe match,
+ *   the model has to fix its `oldText` and retry.
  *
- * Default ON (opt-out via `PI_EDIT_GUARD_RAW_READ=0`). Reasoning: this is
- * the primary fix for the surrender pattern. Users who want the built-in
- * visual rendering can opt out. The user can still see the file content
- * by pressing Ctrl+O to expand, or by using bash/grep for visual reads.
+ * This mode trades the autofix safety net for a simpler mental model: the
+ * guard only validates that there IS a match; it never mutates the model's
+ * `newText`. If you're running pi-autoformat (or any other formatter)
+ * alongside, this is the recommended setting.
+ *
+ * Default OFF; opt-in via `PI_EDIT_GUARD_TRUST_FORMATTER=1` (or `--trust-formatter`).
  */
-export function shouldUseRawRead(): boolean {
-  return !isEnvFalsy('PI_EDIT_GUARD_RAW_READ');
-}
-
-/**
- * Optional post-edit formatter command. When unset (default), no formatter
- * runs after the edit — the autofix path covers uniform-shift drift, and
- * non-uniform cases fall through to the consolidated block.
- *
- * When set, the guard runs the formatter on the file after every successful
- * edit batch. This is the "safety net" for cases the autofix declines
- * (non-uniform-delta, tab-in-newtext, delta-too-large). Two forms:
- *
- * - Full command: `prettier --write`, `black --quiet`, `gofmt -w`, etc.
- *   The file path is appended if no `{file}` placeholder is present.
- * - Bare alias: `biome`, `prettier`, `black`, `gofmt`, `rustfmt`. Resolved
- *   by file extension via `resolveFormatterForFile`.
- *
- * Set to `0` / `false` / `no` to disable explicitly even if a stale alias
- * leaks in. Unknown aliases resolve to null (no formatter runs).
- */
-export function getFormatterCommand(): string | null {
-  const raw = process.env.PI_EDIT_GUARD_FORMATTER;
-  if (!raw) return null;
-  if (raw === '0' || raw === 'false' || raw === 'no') return null;
-  return raw;
-}
-
-/**
- * Map of file extension → default formatter alias. Used when
- * `PI_EDIT_GUARD_FORMATTER` is set to a bare alias like `biome`.
- *
- * The alias here is the COMMAND NAME (without args). `runFormatter` resolves
- * it to the actual command per file at call time. Add to this map as the
- * project supports more languages.
- */
-const FORMATTER_ALIASES: Record<string, string> = {
-  '.ts': 'biome',
-  '.tsx': 'biome',
-  '.js': 'biome',
-  '.jsx': 'biome',
-  '.mjs': 'biome',
-  '.cjs': 'biome',
-  '.json': 'biome',
-  '.css': 'biome',
-  '.scss': 'biome',
-  '.graphql': 'biome',
-  '.md': 'biome',
-  '.py': 'black',
-  '.go': 'gofmt',
-  '.rs': 'rustfmt',
-};
-
-/**
- * Resolve the formatter command for a specific file. Returns null when:
- * - formatter not configured
- * - extension has no alias (e.g. `.txt`, `.lock`)
- * - extension is unknown
- *
- * For a bare alias (`PI_EDIT_GUARD_FORMATTER=biome`), returns the resolved
- * command for the file's extension. For a full command
- * (`PI_EDIT_GUARD_FORMATTER="prettier --write"`), returns the command as-is.
- */
-export function resolveFormatterForFile(filePath: string): string | null {
-  const cmd = getFormatterCommand();
-  if (!cmd) return null;
-  // Full command (contains spaces or args): use as-is.
-  if (cmd.includes(' ')) return cmd;
-  // Bare alias: look up by extension.
-  const dot = filePath.lastIndexOf('.');
-  if (dot === -1) return null;
-  const ext = filePath.slice(dot).toLowerCase();
-  const resolved = FORMATTER_ALIASES[ext];
-  return resolved ?? null;
+export function shouldTrustFormatter(): boolean {
+  return _getBoolEnv('PI_EDIT_GUARD_TRUST_FORMATTER');
 }

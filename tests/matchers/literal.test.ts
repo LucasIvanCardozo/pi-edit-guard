@@ -1,5 +1,5 @@
 import { countLineAnchoredMatches, findLineAnchoredMatches } from '../../src/matchers/literal.ts';
-import { assert, assertEq, section } from '../_framework.ts';
+import { assertEq, section } from '../_framework.ts';
 
 export function run(): void {
   section('matchers/literal: countLineAnchoredMatches');

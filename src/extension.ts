@@ -3,7 +3,7 @@
  *
  * This file is the only place that knows about the Pi runtime. Everything
  * else in `src/` is pure and reusable. The hooks wire together config,
- * evaluation, autofix, formatting, and mutation.
+ * evaluation, autofix, and mutation.
  *
  * Two layers:
  *   - tool_call: intercepts BEFORE native edit runs.
@@ -11,15 +11,25 @@
  *         - ok-literal: pass through.
  *         - unique-drift with uniform leading-spaces shift: mutate the edit
  *           in-place so native edit runs with corrected oldText/newText.
+ *           (Skipped in trust-formatter mode — pass-through verbatim.)
  *         - everything else (fuzzy, ambiguous, no-match, drift that couldn't
  *           be autofixed): the batch is atomic-blocked with a consolidated
  *           report so the model can fix everything in one pass.
+ *           (In trust-formatter mode, unique-drift (any) passes through;
+ *           only ambiguous/fuzzy/no-match still block.)
  *   - tool_result: catches native edit failures. Re-runs the cascade on the
  *       current file state and mutates the error message in-place.
  *
  * Atomic semantics: when ANY edit is unfixable, NO edits are mutated. This
  * is enforced by computing autofix results first, then deciding whether to
  * apply them — only when all edits resolved.
+ *
+ * Trust-formatter mode (opt-in via PI_EDIT_GUARD_TRUST_FORMATTER=1 or
+ * --trust-formatter CLI flag): designed for projects that run an external
+ * formatter (pi-autoformat, biome, prettier) alongside. The guard skips
+ * autofix entirely and passes newText verbatim to native edit; the external
+ * formatter normalizes indent drift. The cascade still validates that
+ * there's a match — ambiguous/fuzzy/no-match still block.
  *
  * Debug logging: enable with `PI_EDIT_GUARD_DEBUG=1`. Each invocation of
  * `processEditInput` appends one NDJSON line to `<log-path>` with sha256 +
@@ -40,7 +50,7 @@ import {
   getMaxExamples,
   getThreshold,
   MAX_FILE_SIZE,
-  shouldUseRawRead,
+  shouldTrustFormatter,
 } from './config.ts';
 import {
   appendDebug,
@@ -51,9 +61,8 @@ import {
   saveFileSnapshot,
 } from './debug.ts';
 import { evaluateBatch } from './evaluate.ts';
-import { formatConsolidatedReport, runFormatter } from './format/index.ts';
+import { formatConsolidatedReport } from './format/index.ts';
 import { mutateToolResult } from './mutate.ts';
-import { registerRawReadTool } from './read-override.ts';
 
 type Edit = { oldText?: string; newText?: string };
 type EditInput = { path?: string; edits?: Edit[] };
@@ -68,6 +77,11 @@ type ProcessOptions = {
   source: 'tool_call' | 'tool_result';
   /** Native edit error message (only present on tool_result with isError). */
   nativeError?: string;
+  /**
+   * When true, skip the autofix layer and pass `newText` verbatim to native
+   * edit. See `shouldTrustFormatter` for the full contract.
+   */
+  trustFormatter?: boolean;
 };
 
 /**
@@ -78,6 +92,10 @@ type ProcessOptions = {
  *     run; inputs are mutated; every edit resolved)
  *   - return 'blocked' (any edit is unfixable; inputs are NOT mutated;
  *     atomic block semantics)
+ *
+ * In trust-formatter mode (`options.trustFormatter === true`):
+ *   - autofix is never called; unique-drift passes through verbatim
+ *   - only ambiguous / fuzzy / no-match block
  */
 async function processEditInput(
   filePath: string | undefined,
@@ -127,20 +145,26 @@ async function processEditInput(
   const threshold = getThreshold();
   const maxExamples = getMaxExamples();
   const hintMin = getHintMinSimilarity();
+  const trustFormatter = options.trustFormatter === true;
+
   const evaluations = evaluateBatch(content, edits, threshold, maxExamples);
 
   // Pass 1: compute autofix for each unique-drift edit WITHOUT mutating.
   // We need to know upfront whether each edit is resolvable, so we can
   // atomically decide to block on the whole batch if any one is unfixable.
+  // In trust-formatter mode, skip autofix entirely — the external formatter
+  // (e.g. pi-autoformat) will normalize indent drift after native edit runs.
   const autofixResults = new Map<number, AutofixResult>();
   const autofixOutcomes = new Map<number, AutofixOutcome>();
-  for (let i = 0; i < evaluations.length; i++) {
-    const evaluation = evaluations[i];
-    if (evaluation.kind !== 'unique-drift') continue;
-    const outcome = tryAutofix(edits[i], evaluation.block);
-    autofixOutcomes.set(i, outcome);
-    if (outcome.ok) autofixResults.set(i, outcome.result);
-    else evaluation.decline = outcome.decline;
+  if (!trustFormatter) {
+    for (let i = 0; i < evaluations.length; i++) {
+      const evaluation = evaluations[i];
+      if (evaluation.kind !== 'unique-drift') continue;
+      const outcome = tryAutofix(edits[i], evaluation.block);
+      autofixOutcomes.set(i, outcome);
+      if (outcome.ok) autofixResults.set(i, outcome.result);
+      else evaluation.decline = outcome.decline;
+    }
   }
 
   // Build the per-edit debug entries now that we know autofix outcomes.
@@ -148,20 +172,20 @@ async function processEditInput(
     buildDebugEdit(edits[i], evaluation, autofixOutcomes.get(i)),
   );
 
-  // TODO(v0.10.0): formatter safety net. After autofix resolves all edits,
-  // we mutate event.input.edits and let native edit run. The formatter call
-  // belongs in `tool_result` (after native succeeds) — read the file fresh,
-  // resolve formatter via `resolveFormatterForFile(filePath)`, call
-  // `runFormatter`, write back. For now, no-op stub; see src/format/formatter.ts.
-  // When wired: add `formatterApplied` and `formatterStderr` to debug entries.
-  void runFormatter;
-
   // Pass 2: is any edit unfixable? An edit is unfixable when its kind is
   // fuzzy/ambiguous/no-match, OR its kind is unique-drift but tryAutofix
   // returned null (tabs, non-uniform shift, or MAX_SANE_DELTA exceeded).
+  // In trust-formatter mode, unique-drift is always considered resolvable
+  // (the external formatter handles drift); only ambiguous/fuzzy/no-match
+  // block.
   const hasUnfixableError = evaluations.some((e, i) => {
     if (e.kind === 'ok-literal') return false;
-    if (e.kind === 'unique-drift' && autofixResults.has(i)) return false;
+    if (e.kind === 'unique-drift') {
+      // In trust mode, drift passes through; only autofix-applied drift
+      // passes in default mode.
+      if (trustFormatter) return false;
+      return !autofixResults.has(i);
+    }
     return true;
   });
 
@@ -182,15 +206,20 @@ async function processEditInput(
 
   // Pass 3: every edit resolved. Apply all autofix mutations in place.
   // Native edit will run with the corrected arguments.
+  // In trust-formatter mode, autofixResults is empty (we skipped autofix) so
+  // this loop is a no-op — newText passes through verbatim, as designed.
   for (const [i, fix] of autofixResults) {
     edits[i].oldText = fix.correctedOldText;
     edits[i].newText = fix.correctedNewText;
   }
 
-  debug.result = 'autofixed';
-  debug.autofixedCount = autofixResults.size;
+  debug.result = trustFormatter ? 'pass' : 'autofixed';
+  debug.autofixedCount = trustFormatter ? undefined : autofixResults.size;
   appendDebug(debug as DebugEvent);
-  return { kind: 'autofixed', corrections: autofixResults.size };
+  return {
+    kind: trustFormatter ? 'pass' : 'autofixed',
+    corrections: autofixResults.size,
+  };
 }
 
 function buildDebugEdit(
@@ -224,19 +253,32 @@ function buildDebugEdit(
 }
 
 export default function (pi: ExtensionAPI) {
-  // Layer 0 (opt-in): override the built-in `read` tool so the model receives
-  // file content with exact whitespace (no TUI padding). This prevents the
-  // surrender pattern where the model copies 4-space padding into edit calls.
-  // Opt-out via PI_EDIT_GUARD_RAW_READ=0.
-  if (shouldUseRawRead()) {
-    registerRawReadTool(pi, process.cwd());
-  }
+  // Register the trust-formatter flag for discoverability (Pi auto-binds
+  // it from --trust-formatter CLI arg). The actual value comes from the
+  // PI_EDIT_GUARD_TRUST_FORMATTER env var (read by shouldTrustFormatter),
+  // keeping the existing pattern of env-var-driven config. If the user
+  // sets the CLI flag without the env var, the flag is registered but the
+  // runtime value won't take effect — a documented limitation, kept simple
+  // to avoid threading the flag value through every code path.
+  pi.registerFlag('trust-formatter', {
+    type: 'boolean',
+    default: false,
+    description:
+      'Skip autofix; pass newText verbatim. Designed for use with an external formatter (e.g. pi-autoformat). The cascade still validates; ambiguous/fuzzy/no-match still block.',
+  });
+
+  // Resolve trust-formatter mode once at startup so processEditInput
+  // doesn't read process.env per call. Cheap, but explicit.
+  const trustFormatter = shouldTrustFormatter();
 
   // Layer 1: intercept BEFORE native edit runs.
   pi.on('tool_call', async (event) => {
     if (event.toolName !== GUARDED_TOOL) return;
     const input = event.input as EditInput | undefined;
-    const result = await processEditInput(input?.path, input?.edits, { source: 'tool_call' });
+    const result = await processEditInput(input?.path, input?.edits, {
+      source: 'tool_call',
+      trustFormatter,
+    });
     if (result.kind === 'blocked') {
       return { block: true, reason: result.reason };
     }
@@ -262,6 +304,7 @@ export default function (pi: ExtensionAPI) {
     const result = await processEditInput(input?.path, input?.edits, {
       source: 'tool_result',
       nativeError,
+      trustFormatter,
     });
     if (result.kind === 'blocked') {
       mutateToolResult(event, result.reason, false);

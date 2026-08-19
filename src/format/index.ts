@@ -16,6 +16,4 @@ export {
   formatConsolidatedReport,
   formatEvaluationSection,
 } from './consolidated.ts';
-export type { FormatterResult } from './formatter.ts';
-export { runFormatter } from './formatter.ts';
 export { formatNoMatchMessage } from './no-match.ts';
