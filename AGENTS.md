@@ -267,6 +267,8 @@ Default OFF; no behavior change for users not setting it.
 
 7. **The surrender pattern dies at the auto-fix layer.** v0.6 made the error message better; v0.7 makes the error disappear for the most common case (uniform leading-space shift). The model never sees a block message and never falls back to `bash`/`python`.
 
+8. **The literal matcher doesn't have a bug with multi-line edits — apparent failures are real inconsistencies in `oldText`.** During v0.12.0 implementation, edits to `extension.ts` and `package.json` were rejected with `fuzzy-match (similarity 1.00)` or `non-uniform-delta (mismatch at line N)`. Investigation showed the matcher (`countLineAnchoredMatches` / `findLineAnchoredMatches`), the cascade (`evaluateEdit`), and autofix (`tryAutofix`) all work correctly. The "bugs" were real inconsistencies in the test inputs — oldTexts where some lines had lost leading whitespace during encoding/pasting. The guard detected them precisely and reported the specific line number. Triage: when developing this extension (or any extension that uses `edit`), if the guard rejects an edit, `cat` the file and compare `oldText` byte-by-byte against the matching lines, paying special attention to leading whitespace per line. The hint `(mismatch at line N)` tells you exactly which line is off. The model sometimes sends oldTexts where only some lines have the right indent — that's a real model error, not a guard bug.
+
 ## Testing
 
 Automated tests across 10 modules, plus an end-to-end script that exercises real files in `/tmp`:
