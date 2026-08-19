@@ -12,10 +12,75 @@ Fixes the most common LLM failure mode in code editing: the model counts spaces 
 pi install npm:@lucascardozo/pi-edit-guard
 ```
 
+## Quick start
+
+After `pi install`, the extension is **active by default with zero config**.
+The most common failure mode (model writes `oldText` with wrong leading
+indentation) is handled silently — `pi-edit-guard` mutates the edit in
+place so native edit succeeds.
+
+### Verify it works
+
+The debug logger is **on by default** and writes one NDJSON line per edit
+to `/tmp/pi-edit-guard-<pid>.log`. Run a model turn that touches a file
+and check the log:
+
+```bash
+# in one terminal
+tail -f /tmp/pi-edit-guard-$(pgrep -f "pi-coding-agent" | head -1).log
+# in another: ask the model to edit any file in your project
+```
+
+If the extension is intercepting correctly, you'll see one JSON line per
+edit with fields like `result: "autofixed"`, `result: "blocked"`, or
+`result: "pass-formatter-trust"` (when a formatter is configured — see
+next section).
+
+### Optional: configure a formatter
+
+If you want the extension to defer to an external formatter (prettier,
+biome, deno fmt, etc.) instead of mutating `newText` itself, create a
+config file. See [Auto-format (opt-in, v0.12.0+)](#auto-format-opt-in-v0120)
+for the schema and [Common formatter recipes](#common-formatter-recipes)
+for copy-paste configs.
+
+The simplest setup — use `prettier` on everything:
+
+```bash
+mkdir -p .pi/extensions/pi-edit-guard
+cat > .pi/extensions/pi-edit-guard/config.json <<'JSON'
+{
+  "commands": { "prettier": ["npx", "prettier", "--write"] },
+  "filetypes": { "*": "prettier" }
+}
+JSON
+```
+
+Restart Pi. From now on, any edit the model makes will run through
+prettier and the model will see the atomic final state
+(`original → formatted`), never the intermediate drift.
+
+### Disabling temporarily
+
+To verify whether `pi-edit-guard` is causing a problem in a specific
+session, set the env var before launching Pi:
+
+```bash
+# Bypass autofix but keep cascade (lets an external formatter handle drift):
+PI_EDIT_GUARD_TRUST_FORMATTER=1 pi
+
+# Silence the debug log (every other feature stays active):
+PI_EDIT_GUARD_DEBUG=0 pi
+```
+
+There's no kill switch that disables the extension entirely — the
+guard's design assumes it's better to have it on with a noisy error
+message than to silently let edits fail with Pi's generic
+"Could not find the exact text" message. If you really want to
+disable it, `pi uninstall @lucascardozo/pi-edit-guard`.
+
 ## What it does
 
-
-### Two-layer protection
 
 **Layer 1 — `tool_call` (before native edit runs)**
 
@@ -199,6 +264,141 @@ Schema (same as `pi-code-formatter`):
   }
 }
 ```
+
+### Common formatter recipes
+
+Copy-paste configs for the most common stacks. Drop into
+`~/.pi/agent/extensions/pi-edit-guard/config.json` (global) or
+`.pi/extensions/pi-edit-guard/config.json` (project overrides global).
+
+**Prettier only** (TypeScript / JavaScript / CSS / Markdown / HTML):
+
+```json
+{
+  "commands": {
+    "prettier": ["npx", "prettier", "--write", "--ignore-unknown"]
+  },
+  "filetypes": {
+    "*.{ts,tsx,js,jsx,mjs,cjs}": "prettier",
+    "*.{css,scss,less}": "prettier",
+    "*.{md,mdx}": "prettier",
+    "*.{html,json,yaml,yml}": "prettier",
+    "*": "prettier"
+  }
+}
+```
+
+**Prettier + ESLint** (format + lint-fix on JS/TS, prettier-only elsewhere):
+
+```json
+{
+  "commands": {
+    "prettier": ["npx", "prettier", "--write"],
+    "eslint": ["npx", "eslint", "--fix"]
+  },
+  "filetypes": {
+    "*.{ts,tsx,js,jsx}": "eslint",
+    "*.{md,css,html,json,yaml,yml}": "prettier",
+    "*": "prettier"
+  }
+}
+```
+
+**Biome** (modern replacement for ESLint + Prettier in one binary):
+
+```json
+{
+  "commands": {
+    "biome": ["npx", "@biomejs/biome", "format", "--write"]
+  },
+  "filetypes": {
+    "*.{ts,tsx,js,jsx,json}": "biome",
+    "*": "biome"
+  }
+}
+```
+
+**Deno fmt** (Deno projects):
+
+```json
+{
+  "commands": {
+    "denofmt": ["deno", "fmt", "--quiet"]
+  },
+  "filetypes": {
+    "*.{ts,tsx,js,jsx,json,md}": "denofmt",
+    "*": "denofmt"
+  }
+}
+```
+
+**Python (Ruff)** — fast linter + formatter:
+
+```json
+{
+  "commands": {
+    "ruff": ["ruff", "format"]
+  },
+  "filetypes": {
+    "*.py": "ruff",
+    "*": "ruff"
+  }
+}
+```
+
+**Python (Black)**:
+
+```json
+{
+  "commands": {
+    "black": ["black", "--quiet"]
+  },
+  "filetypes": {
+    "*.py": "black",
+    "*": "black"
+  }
+}
+```
+
+**Go (goimports)** — runs gofmt internally plus import sorting::
+
+```json
+{
+  "commands": {
+    "goimports": ["goimports", "-w"]
+  },
+  "filetypes": {
+    "*.go": "goimports"
+  }
+}
+```
+
+**Mixed polyglot project** (different tools per file type, wildcard for
+anything else):
+
+```json
+{
+  "commands": {
+    "prettier": ["npx", "prettier", "--write"],
+    "biome": ["npx", "@biomejs/biome", "format", "--write"],
+    "ruff": ["ruff", "format"],
+    "gofmt": ["gofmt", "-w"]
+  },
+  "filetypes": {
+    "*.{ts,tsx,js,jsx}": "biome",
+    "*.py": "ruff",
+    "*.go": "gofmt",
+    "*": "prettier"
+  }
+}
+```
+
+**Important**: every command must accept the file path as its **last
+argument** (after `--`). The extension invokes formatters as
+`<command[0]> <command[1..n]> -- <absolute-file-path>` with a 5-second
+timeout. If your formatter has a different flag convention, adapt the
+command accordingly — e.g., `["black", "-"]` won't work because black
+expects stdin, not a path argument.
 
 Pattern rules:
 
