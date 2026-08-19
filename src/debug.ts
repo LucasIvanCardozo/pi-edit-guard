@@ -96,9 +96,16 @@ export type DebugEvent = {
   fileLeadingNewlines?: number;
   fileTrailingNewlines?: number;
   edits: DebugEdit[];
-  result: 'autofixed' | 'blocked' | 'pass' | 'pass-oversized' | 'pass-unreadable' | 'pass-formatter-trust' | 'formatter-rewritten' | 'formatter-noop' | 'formatter-failed';
+  result: 'autofixed' | 'blocked' | 'pass' | 'pass-oversized' | 'pass-unreadable' | 'formatter-rewritten' | 'formatter-noop' | 'formatter-failed';
   blockReasonBytes?: number;
   autofixedCount?: number;
+  /**
+   * True when a formatter was configured and matched for this file path.
+   * Orthogonal to `result` — lets log consumers correlate autofix
+   * activity with formatter presence (e.g. "autofix corrected oldText
+   * in trust mode; formatter will normalize newText post-edit").
+   */
+  formatterMatched?: boolean;
   /** Path to a saved file snapshot under `<log-dir>/snapshots/`. */
   snapshotPath?: string;
   /** Native edit error message (only when tool_result fires with isError). */
