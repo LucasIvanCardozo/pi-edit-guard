@@ -5,20 +5,26 @@
  * else in `src/` is pure and reusable. The hooks wire together config,
  * evaluation, autofix, and mutation.
  *
- * Two layers:
- *   - tool_call: intercepts BEFORE native edit runs.
- *       For each `edits[i]`:
- *         - ok-literal: pass through.
- *         - unique-drift with uniform leading-spaces shift: mutate the edit
- *           in-place so native edit runs with corrected oldText/newText.
- *           (Skipped in trust-formatter mode — pass-through verbatim.)
- *         - everything else (fuzzy, ambiguous, no-match, drift that couldn't
- *           be autofixed): the batch is atomic-blocked with a consolidated
- *           report so the model can fix everything in one pass.
- *           (In trust-formatter mode, unique-drift (any) passes through;
- *           only ambiguous/fuzzy/no-match still block.)
- *   - tool_result: catches native edit failures. Re-runs the cascade on the
- *       current file state and mutates the error message in-place.
+ * Three layers:
+ *   - session_start: load auto-format config (if any) once at startup.
+ *   - tool_call: intercepts BEFORE native edit runs. For each `edits[i]`:
+ *       - ok-literal: pass through.
+ *       - unique-drift with uniform leading-spaces shift: mutate the edit
+ *         in-place so native edit runs with corrected oldText/newText.
+ *         (Skipped in trust-formatter mode OR when a formatter is configured
+ *         for this file — pass-through verbatim.)
+ *       - everything else (fuzzy, ambiguous, no-match, drift that couldn't
+ *         be autofixed): the batch is atomic-blocked with a consolidated
+ *         report so the model can fix everything in one pass.
+ *         (In trust-formatter / formatter-configured mode, unique-drift
+ *         (any) passes through; only ambiguous/fuzzy/no-match still block.)
+ *   - tool_result (error path): catches native edit failures. Re-runs the
+ *       cascade on the current file state and mutates the error message
+ *       in-place.
+ *   - tool_result (success path, formatter): runs the configured formatter
+ *       after a successful edit and rewrites `details.{patch, diff,
+ *       firstChangedLine}` so the model sees `original → formatted`
+ *       (never the intermediate drift state).
  *
  * Atomic semantics: when ANY edit is unfixable, NO edits are mutated. This
  * is enforced by computing autofix results first, then deciding whether to
@@ -31,6 +37,12 @@
  * formatter normalizes indent drift. The cascade still validates that
  * there's a match — ambiguous/fuzzy/no-match still block.
  *
+ * Formatter integration (auto-format config): when a formatter is configured
+ * for the file being edited (see `src/formatter-config.ts`), the same trust
+ * behavior applies — autofix is skipped because the formatter will rewrite
+ * the file post-edit. Plus, the success-path tool_result hook invokes the
+ * formatter and rewrites details so the model sees the atomic final state.
+ *
  * Debug logging: enable with `PI_EDIT_GUARD_DEBUG=1`. Each invocation of
  * `processEditInput` appends one NDJSON line to `<log-path>` with sha256 +
  * length + preview of every oldText/newText/fileContent, plus the cascade
@@ -41,6 +53,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 import { type AutofixOutcome, type AutofixResult, tryAutofix } from './autofix.ts';
@@ -62,7 +75,15 @@ import {
 } from './debug.ts';
 import { evaluateBatch } from './evaluate.ts';
 import { formatConsolidatedReport } from './format/index.ts';
+import {
+  findFormatter,
+  loadConfig,
+  resolveFormatters,
+  type ResolvedFormatter,
+} from './formatter-config.ts';
+import { generateRewriteResult } from './format/tool-result-rewriter.ts';
 import { mutateToolResult } from './mutate.ts';
+import { runFormatter } from './format/runner.ts';
 
 type Edit = { oldText?: string; newText?: string };
 type EditInput = { path?: string; edits?: Edit[] };
@@ -82,7 +103,20 @@ type ProcessOptions = {
    * edit. See `shouldTrustFormatter` for the full contract.
    */
   trustFormatter?: boolean;
+  /**
+   * Formatter matched for this file (when set, autofix is skipped because
+   * the formatter will rewrite the file post-edit). Only present at
+   * `tool_call` time; resolved via `findFormatter`.
+   */
+  matchedFormatter?: ResolvedFormatter;
 };
+
+// ── Module-level state ────────────────────────────────────────────────────
+
+/** Maps absolute file paths to their content before the edit tool ran. */
+const originalContents = new Map<string, string>();
+/** Resolved formatter config (loaded once at `session_start`). */
+let resolvedFormatters: ResolvedFormatter[] = [];
 
 /**
  * Read the file once. Run the cascade on every edit. Compute autofix for
@@ -95,6 +129,11 @@ type ProcessOptions = {
  *
  * In trust-formatter mode (`options.trustFormatter === true`):
  *   - autofix is never called; unique-drift passes through verbatim
+ *   - only ambiguous / fuzzy / no-match block
+ *
+ * In formatter-configured mode (`options.matchedFormatter` is set):
+ *   - same trust behavior as above; the formatter will normalize drift
+ *     post-edit so autofix would conflict
  *   - only ambiguous / fuzzy / no-match block
  */
 async function processEditInput(
@@ -146,17 +185,23 @@ async function processEditInput(
   const maxExamples = getMaxExamples();
   const hintMin = getHintMinSimilarity();
   const trustFormatter = options.trustFormatter === true;
+  // Formatter-trust mode: a configured formatter will rewrite the file
+  // post-edit, so autofix is unnecessary and would actually conflict (it
+  // would mutate newText before the formatter sees it). Skip autofix
+  // entirely and pass through verbatim.
+  const formatterTrust = options.matchedFormatter !== undefined;
 
   const evaluations = evaluateBatch(content, edits, threshold, maxExamples);
 
   // Pass 1: compute autofix for each unique-drift edit WITHOUT mutating.
   // We need to know upfront whether each edit is resolvable, so we can
   // atomically decide to block on the whole batch if any one is unfixable.
-  // In trust-formatter mode, skip autofix entirely — the external formatter
-  // (e.g. pi-autoformat) will normalize indent drift after native edit runs.
+  // In trust-formatter / formatter-configured mode, skip autofix entirely —
+  // the formatter (internal or external) will normalize indent drift after
+  // native edit runs.
   const autofixResults = new Map<number, AutofixResult>();
   const autofixOutcomes = new Map<number, AutofixOutcome>();
-  if (!trustFormatter) {
+  if (!trustFormatter && !formatterTrust) {
     for (let i = 0; i < evaluations.length; i++) {
       const evaluation = evaluations[i];
       if (evaluation.kind !== 'unique-drift') continue;
@@ -175,15 +220,15 @@ async function processEditInput(
   // Pass 2: is any edit unfixable? An edit is unfixable when its kind is
   // fuzzy/ambiguous/no-match, OR its kind is unique-drift but tryAutofix
   // returned null (tabs, non-uniform shift, or MAX_SANE_DELTA exceeded).
-  // In trust-formatter mode, unique-drift is always considered resolvable
-  // (the external formatter handles drift); only ambiguous/fuzzy/no-match
-  // block.
+  // In trust-formatter / formatter-configured mode, unique-drift is always
+  // considered resolvable (the formatter handles drift); only
+  // ambiguous/fuzzy/no-match block.
   const hasUnfixableError = evaluations.some((e, i) => {
     if (e.kind === 'ok-literal') return false;
     if (e.kind === 'unique-drift') {
       // In trust mode, drift passes through; only autofix-applied drift
       // passes in default mode.
-      if (trustFormatter) return false;
+      if (trustFormatter || formatterTrust) return false;
       return !autofixResults.has(i);
     }
     return true;
@@ -206,18 +251,23 @@ async function processEditInput(
 
   // Pass 3: every edit resolved. Apply all autofix mutations in place.
   // Native edit will run with the corrected arguments.
-  // In trust-formatter mode, autofixResults is empty (we skipped autofix) so
-  // this loop is a no-op — newText passes through verbatim, as designed.
+  // In trust-formatter / formatter-configured mode, autofixResults is
+  // empty (we skipped autofix) so this loop is a no-op — newText passes
+  // through verbatim, as designed.
   for (const [i, fix] of autofixResults) {
     edits[i].oldText = fix.correctedOldText;
     edits[i].newText = fix.correctedNewText;
   }
 
-  debug.result = trustFormatter ? 'pass' : 'autofixed';
-  debug.autofixedCount = trustFormatter ? undefined : autofixResults.size;
+  debug.result = formatterTrust
+    ? 'pass-formatter-trust'
+    : trustFormatter
+      ? 'pass'
+      : 'autofixed';
+  debug.autofixedCount = formatterTrust || trustFormatter ? undefined : autofixResults.size;
   appendDebug(debug as DebugEvent);
   return {
-    kind: trustFormatter ? 'pass' : 'autofixed',
+    kind: formatterTrust || trustFormatter ? 'pass' : 'autofixed',
     corrections: autofixResults.size,
   };
 }
@@ -271,13 +321,56 @@ export default function (pi: ExtensionAPI) {
   // doesn't read process.env per call. Cheap, but explicit.
   const trustFormatter = shouldTrustFormatter();
 
+  // ── Hook: session_start ──────────────────────────────────────────────
+  // Load auto-format config once. The presence of a config (global or
+  // project) determines whether the formatter integration is active.
+  // Absence = behavior identical to v0.11.0 (no formatter, autofix-only).
+  pi.on('session_start', async (_event, ctx) => {
+    try {
+      const config = await loadConfig(ctx.cwd);
+      if (!config) return;
+      resolvedFormatters = resolveFormatters(config);
+      if (resolvedFormatters.length > 0) {
+        ctx.ui.notify(
+          `[pi-edit-guard] Loaded ${resolvedFormatters.length} formatter(s)`,
+          'info',
+        );
+      }
+    } catch {
+      // Best-effort: formatter load failure must never block the session.
+    }
+  });
+
+  // ── Hook: tool_call ──────────────────────────────────────────────────
   // Layer 1: intercept BEFORE native edit runs.
-  pi.on('tool_call', async (event) => {
+  // Responsibilities:
+  //   1. If a formatter matches this file, capture original content for
+  //      the tool_result rewrite hook.
+  //   2. Run cascade + autofix. When a formatter matches, skip autofix
+  //      (formatter-trust mode) so the formatter sees verbatim newText.
+  pi.on('tool_call', async (event, ctx) => {
     if (event.toolName !== GUARDED_TOOL) return;
     const input = event.input as EditInput | undefined;
-    const result = await processEditInput(input?.path, input?.edits, {
+    const filePath = input?.path;
+    const formatter = filePath ? findFormatter(resolvedFormatters, filePath) : null;
+
+    // Capture original content BEFORE native edit runs, so the success-path
+    // tool_result hook can compute the diff from pre-edit to post-formatter.
+    if (formatter && filePath) {
+      const absolutePath = resolve(ctx.cwd, filePath);
+      try {
+        const content = await readFile(absolutePath, 'utf-8');
+        originalContents.set(absolutePath, content);
+      } catch {
+        // File doesn't exist yet (new file); treat original as empty.
+        originalContents.set(absolutePath, '');
+      }
+    }
+
+    const result = await processEditInput(filePath, input?.edits, {
       source: 'tool_call',
       trustFormatter,
+      matchedFormatter: formatter ?? undefined,
     });
     if (result.kind === 'blocked') {
       return { block: true, reason: result.reason };
@@ -285,6 +378,7 @@ export default function (pi: ExtensionAPI) {
     // 'autofixed' (input already mutated) or 'pass' → let native edit run.
   });
 
+  // ── Hook: tool_result (error path) ───────────────────────────────────
   // Layer 2: catch native edit failures and re-surface with our format.
   // Native edit is atomic: if any edit in the batch fails, the whole batch
   // returns an error. We re-run the cascade on the current file state and
@@ -310,5 +404,91 @@ export default function (pi: ExtensionAPI) {
       mutateToolResult(event, result.reason, false);
       return undefined;
     }
+  });
+
+  // ── Hook: tool_result (success path, formatter rewrite) ──────────────
+  // Run the configured formatter after a successful edit and rewrite
+  // `details.{patch, diff, firstChangedLine}` so the model sees the atomic
+  // final state (original → formatted), never the intermediate drift.
+  //   - Skipped when isError (no formatter run on failed edits).
+  //   - Skipped when no original content was captured (no formatter matched
+  //     at tool_call time, or tool_call didn't fire for this path).
+  //   - Skipped when formatter exit non-zero / changed=false (keep original
+  //     patch so the model still sees what actually changed).
+  pi.on('tool_result', async (event, ctx) => {
+    if (event.toolName !== GUARDED_TOOL) return;
+    if (event.isError) return;
+    const input = event.input as EditInput | undefined;
+    const filePath = input?.path;
+    if (!filePath) return;
+    const absolutePath = resolve(ctx.cwd, filePath);
+    const originalContent = originalContents.get(absolutePath);
+    if (originalContent === undefined) return; // no formatter matched
+
+    // Always clean up the captured original, even when we don't rewrite.
+    originalContents.delete(absolutePath);
+
+    const formatter = findFormatter(resolvedFormatters, filePath);
+    if (!formatter) return;
+
+    let result;
+    try {
+      result = await runFormatter(absolutePath, formatter, pi);
+    } catch (err) {
+      // Best-effort: never throw from this hook.
+      appendDebug({
+        timestamp: new Date().toISOString(),
+        source: 'tool_result',
+        path: filePath,
+        edits: [],
+        result: 'formatter-failed',
+        formatterCommand: formatter.command.join(' '),
+        formatterApplied: false,
+        formatterReason: 'exec-threw',
+        formatterStderr: (err as Error).message.slice(0, 500),
+      });
+      return;
+    }
+
+    if (!result.changed) {
+      appendDebug({
+        timestamp: new Date().toISOString(),
+        source: 'tool_result',
+        path: filePath,
+        edits: [],
+        result: result.exitCode !== undefined ? 'formatter-failed' : 'formatter-noop',
+        formatterCommand: result.command,
+        formatterApplied: false,
+        formatterReason:
+          result.exitCode !== undefined
+            ? `exit-code-${result.exitCode}`
+            : 'no-change',
+        formatterStderr: result.stderr || undefined,
+        formatterDurationMs: result.durationMs,
+      });
+      return;
+    }
+
+    // Formatter changed content. Recompute patch/diff from ORIGINAL to
+    // FORMATTED, so the model sees the atomic final state — never the
+    // intermediate drift between newText and the formatter's output.
+    const rewrite = generateRewriteResult(filePath, originalContent, result.content);
+    appendDebug({
+      timestamp: new Date().toISOString(),
+      source: 'tool_result',
+      path: filePath,
+      edits: [],
+      result: 'formatter-rewritten',
+      formatterCommand: result.command,
+      formatterApplied: true,
+      formatterDurationMs: result.durationMs,
+    });
+    const baseDetails =
+      event.details && typeof event.details === 'object'
+        ? (event.details as Record<string, unknown>)
+        : {};
+    return {
+      details: { ...baseDetails, ...rewrite.details },
+    };
   });
 }

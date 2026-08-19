@@ -11,7 +11,7 @@
  *   block with consolidated report (the v0.6 behavior, still alive).
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,10 +38,11 @@ export async function run(): Promise<void> {
     const handlers: Record<string, Array<(e: unknown) => unknown>> = {
       tool_call: [],
       tool_result: [],
+      session_start: [],
     };
     const pi = {
       on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call' || event === 'tool_result') {
+        if (event === 'tool_call' || event === 'tool_result' || event === 'session_start') {
           handlers[event].push(handler);
         }
       },
@@ -54,7 +55,8 @@ export async function run(): Promise<void> {
     };
     mod.default(pi);
     assertEq(handlers.tool_call.length, 1, 'registers 1 tool_call handler');
-    assertEq(handlers.tool_result.length, 1, 'registers 1 tool_result handler');
+    assertEq(handlers.tool_result.length, 2, 'registers 2 tool_result handlers (error + formatter rewrite)');
+    assert(handlers.session_start.length >= 1, 'registers session_start handler for formatter config load');
   }
 
   section('extension: tool_call autofixes indent drift (silent success)');
@@ -409,5 +411,102 @@ export async function run(): Promise<void> {
     const result = await resultHandlers[0](event);
     assert(result === undefined, 'returns undefined when no error');
     assert(event.content[0].text === 'OK', 'content not touched');
+
+  section('extension: session_start loads formatter config from project');
+  {
+    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+    const dir = mkdtempSync(join(tmpdir(), 'pi-edit-guard-formatter-'));
+    const piDir = join(dir, '.pi', 'extensions', 'pi-edit-guard');
+    // Use a no-op formatter command so we don't accidentally invoke anything
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(
+      join(piDir, 'config.json'),
+      JSON.stringify({
+        commands: { fakefmt: ['true'] },
+        filetypes: { '*.ts': 'fakefmt' },
+      }),
+    );
+    writeFileSync(join(dir, 'foo.ts'), '    const a = 1;\n');
+
+    const sessionHandlers: Array<(e: unknown, ctx: unknown) => unknown> = [];
+    const toolCallHandlers: Array<(e: unknown, ctx: unknown) => unknown> = [];
+    const pi = {
+      on(event: string, handler: (e: unknown, ctx?: unknown) => unknown) {
+        if (event === 'session_start') sessionHandlers.push(handler);
+        if (event === 'tool_call') toolCallHandlers.push(handler);
+      },
+      registerTool(_tool: unknown): void {},
+          registerFlag(_flag: unknown): void {},
+      ui: { notify: (_msg: string, _level: string) => {} },
+      cwd: dir,
+      exec: async (_cmd: string, _args: string[], _opts: unknown) => ({
+        code: 0, stdout: '', stderr: '',
+      }),
+    };
+    mod.default(pi);
+
+    // Fire session_start with cwd = temp project dir
+    assert(sessionHandlers.length >= 1, 'session_start handler registered');
+    await sessionHandlers[0]({}, { cwd: dir, ui: { notify: () => {} } });
+
+    // Now fire a tool_call with a file matching the *.ts pattern.
+    // With formatter matched, autofix must NOT mutate the input
+    // (formatter-trust mode passes through verbatim).
+    const event = {
+      toolName: 'edit',
+      input: {
+        path: join(dir, 'foo.ts'),
+        edits: [
+          { oldText: '  const a = 1;', newText: '  const a = 2;' }, // 2sp (wrong)
+        ],
+      },
+    };
+    const ctx = { cwd: dir, ui: { notify: () => {} } };
+    const result = await toolCallHandlers[0](event, ctx);
+
+    rmSync(dir, { recursive: true });
+
+    assert(result === undefined, 'returns undefined (formatter-trust passes through)');
+    const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
+    assertEq(edits[0].oldText, '  const a = 1;', 'oldText untouched (formatter-trust mode)');
+    assertEq(edits[0].newText, '  const a = 2;', 'newText untouched (formatter-trust mode)');
+  }
+
+  section('extension: tool_call autofix still runs when no formatter matches');
+  {
+    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+    const dir = mkdtempSync(join(tmpdir(), 'pi-edit-guard-no-formatter-'));
+    // No config file: formatter integration is inactive.
+    writeFileSync(join(dir, 'bar.js'), '    const a = 1;\n');
+
+    const handlers: Array<(e: unknown) => unknown> = [];
+    const pi = {
+      on(event: string, handler: (e: unknown) => unknown) {
+        if (event === 'tool_call') handlers.push(handler);
+      },
+      registerTool(_tool: unknown): void {},
+          registerFlag(_flag: unknown): void {},
+    };
+    mod.default(pi);
+
+    const event = {
+      toolName: 'edit',
+      input: {
+        path: join(dir, 'bar.js'),
+        edits: [
+          { oldText: '  const a = 1;', newText: '  const a = 2;' }, // 2sp (wrong, will be autofixed)
+        ],
+      },
+    };
+    const ctx = { cwd: dir, ui: { notify: () => {} } };
+    const result = await handlers[0](event, ctx);
+    void result;
+
+    rmSync(dir, { recursive: true });
+
+    const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
+    assertEq(edits[0].oldText, '    const a = 1;', 'oldText mutated to file block (4sp) - autofix ran');
+    assertEq(edits[0].newText, '    const a = 2;', 'newText shifted to 4sp - autofix ran');
+  }
   }
 }

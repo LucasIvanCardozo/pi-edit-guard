@@ -13,7 +13,7 @@ Fixes the most common LLM failure mode in code editing: the model counts spaces 
 
 ## Status
 
-- **v0.11.0 in development** (trust-formatter opt-in mode + formatter subprocess removed; read override removed)
+- **v0.12.0 in development** — formatter safety net integrated (adapted from pi-code-formatter by losnappas, MIT)
 - Install: `pi install npm:@lucascardozo/pi-edit-guard`
 - Repo: https://github.com/LucasIvanCardozo/pi-edit-guard
 - License: MIT
@@ -33,12 +33,15 @@ src/
 ├── types.ts                   shared EditEvaluation, CandidateKind types
 ├── block.ts                   BlockExcerpt type and toBlockExcerpt adapter
 ├── whitespace.ts              stripLeadingWhitespace, normalizeText (spaces-only)
+├── formatter-config.ts        loadConfig, resolveFormatters, findFormatter (config schema + pattern compilation)
 ├── format/
 │   ├── index.ts               barrel re-export
 │   ├── candidate.ts           formatCandidate: fuzzy-match + unfixable drift
 │   ├── ambiguous.ts           formatAmbiguousMessage + formatExamples
 │   ├── consolidated.ts        formatConsolidatedReport (atomic block output)
 │   └── no-match.ts            formatNoMatchMessage (best-similarity hint)
+│   ├── runner.ts              runFormatter via pi.exec (formatter subprocess)
+│   └── tool-result-rewriter.ts generateRewriteResult: original → formatted patch/diff
 └── matchers/
     ├── index.ts               barrel re-export
     ├── literal.ts             countLineAnchoredMatches, findLineAnchoredMatches
@@ -112,6 +115,37 @@ Autofix declines (atomic block) when:
 - `delta-too-large` — `|delta| > 50` exceeds defensive cap.
 - `line-count-mismatch` — oldText and file block have different line counts.
 - `missing-text` — oldText/newText empty.
+
+### Formatter integration (v0.12.0 — opt-in)
+
+When a formatter is configured for the file (via `.pi/extensions/pi-edit-guard/config.json`
+or `~/.pi/agent/extensions/pi-edit-guard/config.json`), the extension operates
+in **formatter-trust mode**:
+
+1. `session_start` handler loads and resolves the config once. Formatters are
+   stored in module-level `resolvedFormatters: ResolvedFormatter[]`.
+2. `tool_call` handler computes `findFormatter(resolvedFormatters, filePath)`
+   and, if a match exists, captures the file's pre-edit content in
+   `originalContents: Map<string, string>`.
+3. The matched formatter propagates into `processEditInput` as
+   `matchedFormatter`, which makes the cascade skip the autofix layer
+   (same as `trustFormatter` mode — the formatter will normalize drift
+   post-edit). Ambiguous/fuzzy/no-match still block.
+4. `tool_result` (success only) handler runs the formatter via `pi.exec`
+   (5s timeout, `--` separator + absolute path) and rewrites
+   `details.{patch, diff, firstChangedLine}` from `original → formatted`.
+   This is the trick that closes the surrender pattern: the model sees
+   the atomic final state, never the intermediate drift.
+
+The diff is computed from `originalContent` (captured pre-edit) to
+`formattedContent` (after formatter runs), NOT from the post-edit
+`newText` to the formatted content. This way, if the model wrote `newText`
+with the wrong indent and the formatter fixed it, the model sees the
+final result cleanly.
+
+Adapted from [pi-code-formatter](https://github.com/losnappas/pi-code-formatter)
+by losnappas (MIT). Pattern compilation, config schema, tool_result
+rewriting, and `pi.exec` runner pattern ported from that extension.
 
 ### No-op detection (v0.9.0)
 

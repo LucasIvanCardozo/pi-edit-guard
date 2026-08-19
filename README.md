@@ -169,6 +169,77 @@ Re-read the file to see its current contents before retrying.
 
 When the best similarity is below the hint minimum (default 0.50), the closest block is omitted to avoid misleading the model.
 
+## Auto-format (opt-in, v0.12.0+)
+
+When a formatter is configured for a file, `pi-edit-guard` skips its own
+auto-fix layer and lets the external formatter rewrite the file post-edit.
+The model sees the atomic final state (original → formatted), never the
+intermediate drift between `newText` and the formatter's output.
+
+### Config file
+
+Create one of these (or both — project overrides global for matching keys):
+
+- **Global:** `~/.pi/agent/extensions/pi-edit-guard/config.json`
+- **Project:** `.pi/extensions/pi-edit-guard/config.json`
+
+Schema (same as `pi-code-formatter`):
+
+```json
+{
+  "commands": {
+    "prettier": ["npx", "prettier", "--write"],
+    "eslint": ["npx", "eslint", "--fix"]
+  },
+  "filetypes": {
+    "*.ts": "prettier",
+    "*.md": "prettier",
+    "*.{js,jsx}": "eslint",
+    "*": "prettier"
+  }
+}
+```
+
+Pattern rules:
+
+- `*.ext` — glob, matches files ending in `.ext` (specific, wins over `*`)
+- `/regex/` — explicit regex, the body between slashes
+- `literal` — literal suffix match
+- `*` — wildcard fallback (only matches if no specific pattern matched)
+
+The first matching pattern wins. More-specific patterns are tried before
+the wildcard. Unknown command names are skipped with a console warning.
+
+### Behavior
+
+When a formatter matches the file being edited:
+
+1. **In `tool_call`:** autofix is skipped (`matchedFormatter` propagates
+   into `processEditInput`). The guard still validates that there IS a
+   match — ambiguous/fuzzy/no-match still block with the consolidated
+   report. The model's `newText` passes through verbatim.
+2. **In `tool_result` (success only):** the formatter runs via `pi.exec`
+   (5-second timeout, `--` separator + absolute path). If the formatter
+   changes the file, `details.{patch, diff, firstChangedLine}` are
+   rewritten so the model sees `original → formatted`. If the formatter
+   fails, exits non-zero, or makes no change, the original details are
+   kept (best-effort, never throws).
+
+The result the model sees is the atomic final state — never the drift
+intermediate. This closes the "surrender" loop where the model re-reads
+the file to "fix" indentation it never actually broke.
+
+### Backward compatibility
+
+If no config file exists, behavior is identical to v0.11.0: autofix runs
+for unique drift, blocks for everything else. The formatter integration
+is purely opt-in.
+
+The pre-existing `PI_EDIT_GUARD_TRUST_FORMATTER=1` flag (and
+`--trust-formatter` CLI flag) still works for projects that prefer an
+external formatter without the in-process rewrite — it's now redundant
+when a config file is present, but kept for users who already rely on it.
+
 ## Debug logging (production triage)
 
 The debug logger is **on by default**: every cascade invocation writes one NDJSON line to `/tmp/pi-edit-guard-<pid>.log` with full `oldText` / `newText` content and a verbatim file snapshot under `/tmp/pi-edit-guard-<pid>/snapshots/<sha>.orig`. No env vars needed to turn any of this on.
@@ -194,10 +265,15 @@ Fields per log entry:
 | `edits[i].newTextBytes` / `newTextSha` / `newTextPreview` / `newTextLeadingSpaces` | What the model wants to write. |
 | `edits[i].evaluationKind` | `ok-literal`, `unique-drift`, `fuzzy-match`, `ambiguous-*`, `no-match`. |
 | `edits[i].autofixOutcome` | `ok` (with `autofixDelta`) \| `declined` (with `declineReason`) \| `n/a`. |
-| `result` | `autofixed` \| `blocked` (with `blockReasonBytes`) \| `pass` \| `pass-oversized` \| `pass-unreadable`. |
+| `result` | `autofixed` \| `blocked` (with `blockReasonBytes`) \| `pass` \| `pass-oversized` \| `pass-unreadable` \| `pass-formatter-trust` (formatter matched; autofix skipped) \| `formatter-rewritten` \| `formatter-noop` \| `formatter-failed`. |
 | `autofixedCount` | Number of edits silently corrected (only present when `result: 'autofixed'`). |
 | `snapshotPath` | Absolute path to the saved file snapshot (always present by default; absent when `LOG_SNAPSHOTS=0`). |
 | `nativeError` | What the native edit tool returned (only on `tool_result` events with `isError`). Shows what the model actually saw. |
+| `formatterCommand` | The resolved formatter command (only on `tool_result` formatter events). |
+| `formatterApplied` | `true` when the formatter actually changed the file content. |
+| `formatterReason` | Brief reason when formatter was skipped, failed, or no-op (`exit-code-N`, `no-change`, `exec-threw`). |
+| `formatterStderr` | Truncated stderr (only when formatter exited non-zero). |
+| `formatterDurationMs` | Wall-clock duration of the formatter run. |
 
 The log rotates at 5 MB. Snapshots are capped at 200 files / 100MB total (oldest by mtime get pruned).
 
@@ -228,7 +304,7 @@ Snapshots go to `./snapshots/` (i.e. `<dirname(log-path)>/snapshots/`).
 | `PI_EDIT_GUARD_LOG_PATH` | `/tmp/pi-edit-guard-<pid>.log` | n/a | Where the NDJSON log goes. Snapshot dir is `<dirname>/snapshots/`. |
 | `PI_EDIT_GUARD_LOG_FULL` | **ON** | `=0` | Log full `oldText`/`newText` content instead of 200-char preview. |
 | `PI_EDIT_GUARD_LOG_SNAPSHOTS` | **ON** | `=0` | Save a verbatim copy of the file at edit time to `<log-dir>/snapshots/<sha>.orig`. Dedupe by sha, capped at 200 files / 100MB. |
-| `PI_EDIT_GUARD_TRUST_FORMATTER` | unset | `=0` | Opt-in trust mode: skip autofix, pass `newText` verbatim to native edit. Designed for projects that run an external formatter (`pi-autoformat`, biome, prettier, etc.) alongside this extension. The cascade still validates; ambiguous/fuzzy/no-match still block. Also registered as `--trust-formatter` CLI flag for discoverability. |
+| `PI_EDIT_GUARD_TRUST_FORMATTER` | unset | `=0` | Opt-in trust mode: skip autofix, pass `newText` verbatim to native edit. Designed for projects that run an external formatter (`pi-autoformat`, biome, prettier, etc.) alongside this extension. The cascade still validates; ambiguous/fuzzy/no-match still block. Also registered as `--trust-formatter` CLI flag for discoverability. Redundant when an auto-format config file is present (v0.12.0+); the config file is the preferred opt-in path. |
 
 All three log flags default to ON. Set the env var to `0`, `false`, or `no` to disable that flag. `1` / `true` / `yes` still works (redundant with default but explicit).
 
@@ -264,7 +340,10 @@ tests/
 │   └── fuzzy.test.ts          # src/matchers/fuzzy.ts
 ├── evaluate.test.ts           # src/evaluate.ts
 ├── format.test.ts             # src/format/* (all output formats)
-└── extension.test.ts          # src/extension.ts (e2e via jiti)
+├── format/
+│   ├── runner.test.ts         # src/format/runner.ts (fake pi.exec)
+│   └── tool-result-rewriter.test.ts  # src/format/tool-result-rewriter.ts
+└── extension.test.ts          # src/extension.ts (e2e via jiti, formatter flow)
 ```
 
 Coverage:
@@ -301,12 +380,15 @@ pi-edit-guard/
 │   ├── types.ts             # shared EditEvaluation and CandidateKind types
 │   ├── block.ts             # BlockExcerpt type and toBlockExcerpt adapter
 │   ├── whitespace.ts        # stripLeadingWhitespace, normalizeText (spaces-only)
+│   ├── formatter-config.ts  # auto-format config: loadConfig, resolveFormatters, findFormatter
 │   ├── format/
 │   │   ├── index.ts         # barrel re-export
 │   │   ├── candidate.ts     # formatCandidate: fuzzy-match + unfixable drift
 │   │   ├── ambiguous.ts     # formatAmbiguousMessage + formatExamples
 │   │   ├── consolidated.ts  # formatConsolidatedReport (atomic block output)
 │   │   └── no-match.ts      # formatNoMatchMessage (best-similarity hint)
+│   │   ├── runner.ts        # runFormatter via pi.exec (formatter subprocess)
+│   │   └── tool-result-rewriter.ts  # generateRewriteResult: original → formatted patch/diff
 │   └── matchers/
 │       ├── index.ts         # barrel re-export
 │       ├── literal.ts       # countLineAnchoredMatches, findLineAnchoredMatches
@@ -329,6 +411,15 @@ Each module has one responsibility. To add a new matcher (e.g. AST-based), creat
 ## Tested alongside
 
 - `gentle-pi` v2.1.2 with `quiet-tools.ts` enabled — works correctly, custom renderer respects the mutation
+
+## Credits
+
+The auto-format integration (v0.12.0+) is adapted from
+[pi-code-formatter](https://github.com/losnappas/pi-code-formatter) by
+losnappas, under the MIT License. The pattern compilation, config schema,
+tool_result rewriting, and `pi.exec` formatter runner pattern were ported
+from that extension. See the header comments in `src/formatter-config.ts`
+and `src/format/tool-result-rewriter.ts` for attribution.
 
 ## License
 

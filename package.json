@@ -1,6 +1,6 @@
 {
   "name": "@lucascardozo/pi-edit-guard",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Pi extension that wraps the native edit tool with indentation-drift recovery, uniqueness enforcement, and batch-aware error reporting. Fixes the most common LLM failure mode in code editing.",
   "type": "module",
   "license": "MIT",
@@ -14,7 +14,12 @@
     "ai",
     "coding-agent"
   ],
-  "files": ["index.ts", "src", "README.md", "LICENSE"],
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
     "url": "git+ssh://git@github.com/LucasIvanCardozo/pi-edit-guard.git"
@@ -24,7 +29,9 @@
     "url": "https://github.com/LucasIvanCardozo/pi-edit-guard/issues"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
@@ -45,5 +52,8 @@
     "jiti": "^2.7.0",
     "typescript": "^5.0.0"
   },
-  "packageManager": "pnpm@11.22.0+sha512.1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621"
+  "packageManager": "pnpm@11.22.0+sha512.1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621",
+  "dependencies": {
+    "diff": "^8.0.4"
+  }
 }

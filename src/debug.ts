@@ -96,13 +96,23 @@ export type DebugEvent = {
   fileLeadingNewlines?: number;
   fileTrailingNewlines?: number;
   edits: DebugEdit[];
-  result: 'autofixed' | 'blocked' | 'pass' | 'pass-oversized' | 'pass-unreadable';
+  result: 'autofixed' | 'blocked' | 'pass' | 'pass-oversized' | 'pass-unreadable' | 'pass-formatter-trust' | 'formatter-rewritten' | 'formatter-noop' | 'formatter-failed';
   blockReasonBytes?: number;
   autofixedCount?: number;
   /** Path to a saved file snapshot under `<log-dir>/snapshots/`. */
   snapshotPath?: string;
   /** Native edit error message (only when tool_result fires with isError). */
   nativeError?: string;
+  /** Resolved formatter command (only on tool_result formatter events). */
+  formatterCommand?: string;
+  /** True when the formatter actually changed the file content. */
+  formatterApplied?: boolean;
+  /** Brief reason when formatter was skipped, failed, or no-op. */
+  formatterReason?: string;
+  /** Truncated stderr (only when formatter exited non-zero). */
+  formatterStderr?: string;
+  /** Wall-clock duration of the formatter run. */
+  formatterDurationMs?: number;
 };
 
 function snapshotsDir(): string {
