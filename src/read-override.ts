@@ -170,10 +170,19 @@ export function registerRawReadTool(pi: ExtensionAPI, cwd: string): void {
 		renderShell: 'self',
 
 		// Minimal call header: just `read <path>`.
+		//
+		// We must produce a renderable component even when the runtime does not
+		// provide `lastComponent` (first call of a session, or certain render
+		// paths). `emptyComponent()` is intentionally a no-op for the COMPACT
+		// result, so using it here would make the header disappear entirely.
+		// `plainTextComponent` is the fallback so the user always sees the
+		// `read <path>` line, regardless of whether the runtime handed us a
+		// component to mutate or we have to build one from scratch.
 		renderCall(args: { path?: string; file_path?: string }, _theme: unknown, context: { lastComponent?: unknown }) {
-			const component = (context.lastComponent as ComponentLike | undefined) ?? emptyComponent();
 			const path = args?.path ?? args?.file_path ?? '...';
-			component.setText(`read ${path}`);
+			const text = `read ${path}`;
+			const component = (context.lastComponent as ComponentLike | undefined) ?? plainTextComponent(text);
+			component.setText(text);
 			return component;
 		},
 

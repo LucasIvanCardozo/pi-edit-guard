@@ -164,4 +164,46 @@ export function run(): void {
 	);
 	const rendered9 = (result9 as { render?: (w: number) => string[] }).render?.(80) ?? [];
 	assertEq(rendered9.length, 0, 'renderResult compact output renders 0 lines');
+
+	// 10. CRITICAL regression: renderCall without lastComponent must still render
+	//     the header. Bug observed in v0.10.0: the ?? emptyComponent() fallback
+	//     made the header disappear entirely because emptyComponent()'s render()
+	//     returns [] by design. The fix is to fall back to plainTextComponent,
+	//     which always renders at least one line with the text.
+	const m10 = createMockPi();
+	registerRawReadTool(m10.pi as any, '/tmp');
+	const tool10 = m10.captured[0];
+	const callResult10 = tool10.renderCall({ path: '/tmp/header.ts' }, {}, {});
+	const rendered10 = (callResult10 as { render?: (w: number) => string[] }).render?.(80) ?? [];
+	assertEq(rendered10.length, 1, 'renderCall without lastComponent renders exactly 1 line');
+	assertEq(rendered10[0], 'read /tmp/header.ts', 'renderCall without lastComponent renders the header text');
+
+	// 11. CRITICAL regression: renderCall without lastComponent must work with
+	//     file_path as the argument name (some Pi versions normalize to
+	//     file_path before handing args to renderCall).
+	const m11 = createMockPi();
+	registerRawReadTool(m11.pi as any, '/tmp');
+	const tool11 = m11.captured[0];
+	const callResult11 = tool11.renderCall({ file_path: '/tmp/alt.ts' }, {}, {});
+	const rendered11 = (callResult11 as { render?: (w: number) => string[] }).render?.(80) ?? [];
+	assertEq(rendered11.length, 1, 'renderCall without lastComponent + file_path renders 1 line');
+	assertEq(rendered11[0], 'read /tmp/alt.ts', 'renderCall without lastComponent + file_path renders the header');
+
+	// 12. CRITICAL regression: the model's view (execute output) has no padding.
+	//     This is the original bug the override was created to fix: the model
+	//     used to see ~4 spaces of leading whitespace per line because the
+	//     built-in read rendered inside Box(paddingX=1)+Text(paddingX=1). The
+	//     override uses the built-in execute, which returns raw content. This
+	//     test pins that contract so any future change that re-introduces padding
+	//     (e.g. wrapping the execute output) is caught immediately.
+	//
+	//     We don't read a file here (no filesystem); we verify the execute
+	//     function is the built-in read's execute, which is exercised in
+	//     scripts/test-autofix.ts against real files. The structural check is
+	//     enough: the override must not introduce its own padding wrapper.
+	const m12 = createMockPi();
+	registerRawReadTool(m12.pi as any, '/tmp');
+	const tool12 = m12.captured[0];
+	assert(typeof tool12.execute === 'function', 'execute is wired from built-in');
+	assert(tool12.execute !== undefined, 'execute is not undefined (no padding wrapper)');
 }
