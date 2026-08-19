@@ -391,4 +391,136 @@ export function run(): void {
       );
     }
   }
+
+  // ── shiftNewText: false (trust modes) ─────────────────────────────
+  // In trust mode, autofix only mutates oldText to the file block verbatim.
+  // newText passes through unchanged; the (internal or external) formatter
+  // is responsible for normalizing newText drift post-edit. The only
+  // decline reasons that still apply are those that prevent native edit
+  // from succeeding: missing-text, line-count-mismatch, and
+  // tab-in-file-block (the spaces-only assumption).
+  //
+  // All shift-related decline reasons (non-uniform-delta, tab-in-newtext,
+  // delta-too-large, zero-delta) become irrelevant: we don't shift.
+
+  section('autofix [shiftNewText:false]: uniform +2 drift succeeds, newText verbatim');
+  {
+    // Model oldText drifted by +2; newText drifted by +2 (model intent).
+    // In trust mode, autofix returns the file block as correctedOldText so
+    // native edit can find the block, and leaves newText unchanged for the
+    // formatter to clean up post-edit.
+    const fix = tryAutofix(
+      { oldText: '  return 1;', newText: '  return 2;' },
+      { startLine: 2, lines: ['    return 1;'] },
+      { shiftNewText: false },
+    );
+    assert(fix.ok, 'succeeds for uniform +2 drift in trust mode');
+    if (fix.ok) {
+      assertEq(fix.result.correctedOldText, '    return 1;', 'correctedOldText is the file block');
+      assertEq(fix.result.correctedNewText, '  return 2;', 'correctedNewText is newText verbatim (no shift)');
+      assertEq(fix.result.delta, 0, 'delta is 0 in trust mode (informational)');
+      assertEq(fix.result.startLine, 2, 'startLine preserved');
+      assertEq(fix.result.endLine, 2, 'endLine preserved');
+    }
+  }
+
+  section('autofix [shiftNewText:false]: non-uniform delta SUCCEEDS (not relevant when not shifting)');
+  {
+    // In default mode this would decline with `non-uniform-delta`. In trust
+    // mode we don't shift newText, so non-uniformity is irrelevant: the
+    // cascade already found the block, and we use it as correctedOldText.
+    // The formatter handles newText drift.
+    const fix = tryAutofix(
+      {
+        oldText: 'if (x) {\n    return 1;\n  }',
+        newText: 'if (x) {\n    return 2;\n  }',
+      },
+      { startLine: 1, lines: ['if (x) {', '    return 1;', '  }'] },
+      { shiftNewText: false },
+    );
+    assert(fix.ok, 'succeeds for non-uniform drift in trust mode (shift is skipped)');
+    if (fix.ok) {
+      assertEq(
+        fix.result.correctedOldText,
+        'if (x) {\n    return 1;\n  }',
+        'correctedOldText is the file block verbatim',
+      );
+      assertEq(
+        fix.result.correctedNewText,
+        'if (x) {\n    return 2;\n  }',
+        'correctedNewText is newText verbatim (formatter will normalize)',
+      );
+    }
+  }
+
+  section('autofix [shiftNewText:false]: tab-in-newText SUCCEEDS (formatter handles mixed-indent)');
+  {
+    // In default mode this would decline with `tab-in-newtext` to prevent
+    // polluting the file with mixed-indent (shift would write spaces+tab).
+    // In trust mode, newText passes through verbatim; the formatter is
+    // expected to normalize the tab.
+    const fix = tryAutofix(
+      { oldText: '  return 1;', newText: '\t  return 2;' },
+      { startLine: 1, lines: ['    return 1;'] },
+      { shiftNewText: false },
+    );
+    assert(fix.ok, 'succeeds when newText has leading tab in trust mode');
+    if (fix.ok) {
+      assertEq(fix.result.correctedOldText, '    return 1;', 'correctedOldText is the file block');
+      assertEq(
+        fix.result.correctedNewText,
+        '\t  return 2;',
+        'correctedNewText is newText verbatim (tab preserved; formatter normalizes)',
+      );
+    }
+  }
+
+  section('autofix [shiftNewText:false]: tab-in-file-block DECLINES (spaces-only assumption)');
+  {
+    // The cascade's normalized matcher strips both spaces and tabs from
+    // file lines, so it can match a file with tabs to a model oldText with
+    // spaces. The autofix still enforces the spaces-only assumption by
+    // declining when the matched block has tabs in its leading whitespace.
+    // This applies in trust mode too: we can't fix the file's tabs by
+    // mutating newText, and we shouldn't pretend the autofix can.
+    const fix = tryAutofix(
+      { oldText: '    return 1;', newText: '    return 2;' },
+      { startLine: 1, lines: ['\treturn 1;'] },
+      { shiftNewText: false },
+    );
+    assert(!fix.ok, 'declines when file block has leading tab');
+    if (!fix.ok) {
+      assertEq(fix.decline.reason, 'tab-in-file-block', 'specific reason: spaces-only assumption violated');
+      assertEq(fix.decline.tabLine, 0, 'reports 0-indexed line of tab');
+    }
+  }
+
+  section('autofix [shiftNewText:false]: missing oldText DECLINES');
+  {
+    // Defensive: if oldText is missing, we can't even find the block.
+    // This applies in every mode.
+    const fix = tryAutofix({ newText: 'x' }, { startLine: 1, lines: [''] }, { shiftNewText: false });
+    assert(!fix.ok, 'declines when oldText missing');
+    if (!fix.ok) {
+      assertEq(fix.decline.reason, 'missing-text', 'specific reason: missing-text');
+    }
+  }
+
+  section('autofix [shiftNewText:false]: line-count mismatch DECLINES');
+  {
+    // Defensive: the cascade guarantees this doesn't happen, but we still
+    // guard against it. If oldText has 2 lines but the file block has 1,
+    // we can't construct correctedOldText.
+    const fix = tryAutofix(
+      { oldText: '  return 1;\n  return 2;', newText: '  return 3;\n  return 4;' },
+      { startLine: 1, lines: ['    return 1;'] },
+      { shiftNewText: false },
+    );
+    assert(!fix.ok, 'declines on line-count mismatch');
+    if (!fix.ok) {
+      assertEq(fix.decline.reason, 'line-count-mismatch', 'specific reason: line-count-mismatch');
+      assertEq(fix.decline.mismatch?.model, 2, 'reports model line count');
+      assertEq(fix.decline.mismatch?.file, 1, 'reports file line count');
+    }
+  }
 }

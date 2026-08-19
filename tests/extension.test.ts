@@ -1,512 +1,592 @@
-/**
- * End-to-end test: load the extension via jiti (same loader Pi uses),
- * register hooks, fire events, verify hook outputs.
- *
- * This is the only test that exercises the full composition root.
- * Everything else is unit-level.
- *
- * Two paths through the tool_call hook are tested:
- * - Autofix path: unique-drift with uniform delta → mutate event.input, no block.
- * - Block path: ambiguous/fuzzy/no-match, or drift that can't be autofixed →
- *   block with consolidated report (the v0.6 behavior, still alive).
- */
+    /**
+     * End-to-end test: load the extension via jiti (same loader Pi uses),
+     * register hooks, fire events, verify hook outputs.
+     *
+     * This is the only test that exercises the full composition root.
+     * Everything else is unit-level.
+     *
+     * Three paths through the tool_call hook are tested:
+     * - Autofix path: unique-drift with uniform delta → mutate event.input, no block.
+     * - Trust-mode autofix path: unique-drift with formatter matched → mutate
+     *   oldText only (newText passes through for formatter to normalize).
+     * - Block path: ambiguous/fuzzy/no-match, or drift that can't be autofixed →
+     *   block with consolidated report (the v0.6 behavior, still alive).
+     */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createJiti } from 'jiti';
+    import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import { fileURLToPath } from 'node:url';
+    import { createJiti } from 'jiti';
 
-import { assert, assertEq, assertMatch, section } from './_framework.ts';
+    import { assert, assertEq, assertMatch, section } from './_framework.ts';
 
-const jiti = createJiti(fileURLToPath(import.meta.url), {
-  interopDefault: true,
-  esmResolve: true,
-});
-
-export async function run(): Promise<void> {
-  section('extension: loads via jiti');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const def = mod.default;
-    assert(typeof def === 'function', 'default export is a function');
-  }
-
-  section('extension: registers tool_call and tool_result hooks');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const handlers: Record<string, Array<(e: unknown) => unknown>> = {
-      tool_call: [],
-      tool_result: [],
-      session_start: [],
-    };
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call' || event === 'tool_result' || event === 'session_start') {
-          handlers[event].push(handler);
-        }
-      },
-      registerTool(_tool: unknown): void {
-        // no-op: tests register only call hooks
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
-          },
-    };
-    mod.default(pi);
-    assertEq(handlers.tool_call.length, 1, 'registers 1 tool_call handler');
-    assertEq(handlers.tool_result.length, 2, 'registers 2 tool_result handlers (error + formatter rewrite)');
-    assert(handlers.session_start.length >= 1, 'registers session_start handler for formatter config load');
-  }
-
-  section('extension: tool_call autofixes indent drift (silent success)');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const dir = mkdtempSync(join(tmpdir(), 'edit-guard-autofix-'));
-    const testFile = join(dir, 'test.ts');
-    writeFileSync(
-      testFile,
-      [
-        'export function SoketiClient() {',
-        '      let pusherClient: Pusher | null = null;',
-        '      Object.values(SOKETI_EVENTS).forEach((eventName) => {',
-        '        // ... handler',
-        '      });',
-        '}',
-      ].join('\n'),
-    );
-
-    const handlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call') handlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {
-        // no-op
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
-          },
-    };
-    mod.default(pi);
-
-    const event = {
-      toolName: 'edit',
-      input: {
-        path: testFile,
-        edits: [
-          {
-            oldText: '  let pusherClient: Pusher | null = null;', // 2sp (wrong)
-            newText: '  const target = {};', // 2sp (will be shifted to 6sp)
-          },
-        ],
-      },
-    };
-
-    const result = await handlers[0](event);
-
-    rmSync(dir, { recursive: true });
-
-    assert(result === undefined, 'returns undefined (let native edit run)');
-    const fixedOld = (event.input as { edits: Array<{ oldText: string }> }).edits[0].oldText;
-    const fixedNew = (event.input as { edits: Array<{ newText: string }> }).edits[0].newText;
-    assertEq(
-      fixedOld,
-      '      let pusherClient: Pusher | null = null;',
-      'oldText mutated to file block (6sp)',
-    );
-    assertEq(fixedNew, '      const target = {};', 'newText shifted by +4 to match file indent');
-  }
-
-  section('extension: tool_call autofixes mixed ok+drift batch');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const dir = mkdtempSync(join(tmpdir(), 'edit-guard-mixed-'));
-    const testFile = join(dir, 'test.ts');
-    writeFileSync(testFile, 'const a = 1;\n    const b = 2;\n');
-
-    const handlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call') handlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {
-        // no-op
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
-          },
-    };
-    mod.default(pi);
-
-    const event = {
-      toolName: 'edit',
-      input: {
-        path: testFile,
-        edits: [
-          { oldText: 'const a = 1;', newText: 'const a = 99;' }, // ok-literal
-          { oldText: '  const b = 2;', newText: '  const b = 22;' }, // drift, autofixed
-        ],
-      },
-    };
-
-    const result = await handlers[0](event);
-
-    rmSync(dir, { recursive: true });
-
-    assert(result === undefined, 'returns undefined (mixed batch autofixed)');
-    const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
-    assertEq(edits[0].oldText, 'const a = 1;', 'edit 1 unchanged (was ok-literal)');
-    assertEq(edits[0].newText, 'const a = 99;', 'edit 1 newText unchanged');
-    assertEq(edits[1].oldText, '    const b = 2;', 'edit 2 oldText mutated to file block (4sp)');
-    assertEq(edits[1].newText, '    const b = 22;', 'edit 2 newText shifted to 4sp');
-  }
-
-  section('extension: tool_call atomically blocks when one edit is ambiguous');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const dir = mkdtempSync(join(tmpdir(), 'edit-guard-atomic-'));
-    const testFile = join(dir, 'test.ts');
-    // Two `});` lines → ambiguous-literal for edit 2 if pattern is just `});`
-    writeFileSync(testFile, 'a();\n  });\nb();\n  });\n');
-
-    const handlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call') handlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {
-        // no-op
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
-          },
-    };
-    mod.default(pi);
-
-    const event = {
-      toolName: 'edit',
-      input: {
-        path: testFile,
-        edits: [
-          { oldText: 'a();\n  });\nb();', newText: 'A();\n  });\nB();' }, // ok-literal
-          { oldText: '  });', newText: '  }); // done' }, // ambiguous (2 matches)
-        ],
-      },
-    };
-
-    const result = await handlers[0](event);
-
-    rmSync(dir, { recursive: true });
-
-    assert(result !== undefined, 'returns a result');
-    const r = result as { block: boolean; reason: string };
-    assert(r.block === true, 'blocks the call (atomic)');
-    assertMatch(r.reason, /Edit guard:.*1 of 2/, 'consolidated report counts the unfixable edit');
-    assertMatch(r.reason, /Edit 2:.*similar blocks/, 'edit 2 reported as ambiguous');
-    // Edit 1 should NOT have been mutated — atomic block means no input mutation.
-    const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
-    assertEq(edits[0].oldText, 'a();\n  });\nb();', 'edit 1 input untouched (no partial fix)');
-    assertEq(edits[1].oldText, '  });', 'edit 2 input untouched');
-  }
-
-  section('extension: tool_call blocks when fuzzy-match (no autofix for character diffs)');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const dir = mkdtempSync(join(tmpdir(), 'edit-guard-fuzzy-'));
-    const testFile = join(dir, 'test.ts');
-    // File has double digit; oldText has single digit. Same indent (4sp) so
-    // normalized match fails (return 11 != return 1) but fuzzy similarity ≈ 0.92
-    // → triggers fuzzy-match verdict (not drift, not no-match).
-    writeFileSync(testFile, '    return 11;\n');
-
-    const handlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call') handlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {
-        // no-op
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
-          },
-    };
-    mod.default(pi);
-
-    const event = {
-      toolName: 'edit',
-      input: {
-        path: testFile,
-        edits: [{ oldText: '    return 1;', newText: '    return 99;' }],
-      },
-    };
-
-    const result = await handlers[0](event);
-
-    rmSync(dir, { recursive: true });
-
-    assert(result !== undefined, 'returns a result');
-    const r = result as { block: boolean; reason: string };
-    assert(r.block === true, 'blocks the call (fuzzy is not autofixable)');
-    assertMatch(r.reason, /small difference from the file/, 'fuzzy-match message');
-    const edits = (event.input as { edits: Array<{ oldText: string }> }).edits;
-    assertEq(edits[0].oldText, '    return 1;', 'oldText untouched (no autofix for fuzzy)');
-  }
-
-  section('extension: tool_call passes when all edits ok');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const dir = mkdtempSync(join(tmpdir(), 'edit-guard-e2e-ok-'));
-    const testFile = join(dir, 'test.ts');
-    writeFileSync(testFile, 'const a = 1;\nconst b = 2;\n');
-
-    const handlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call') handlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {
-        // no-op
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
-          },
-    };
-    mod.default(pi);
-
-    const result = await handlers[0]({
-      toolName: 'edit',
-      input: {
-        path: testFile,
-        edits: [{ oldText: 'const a = 1;' }, { oldText: 'const b = 2;' }],
-      },
+    const jiti = createJiti(fileURLToPath(import.meta.url), {
+      interopDefault: true,
+      esmResolve: true,
     });
 
-    rmSync(dir, { recursive: true });
+    export async function run(): Promise<void> {
+      section('extension: loads via jiti');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const def = mod.default;
+        assert(typeof def === 'function', 'default export is a function');
+      }
 
-    assert(result === undefined, 'returns undefined when all pass');
-  }
-
-  section('extension: tool_call ignores non-edit tools');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const handlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call') handlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {
-        // no-op
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
+      section('extension: registers tool_call and tool_result hooks');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const handlers: Record<string, Array<(e: unknown) => unknown>> = {
+          tool_call: [],
+          tool_result: [],
+          session_start: [],
+        };
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_call' || event === 'tool_result' || event === 'session_start') {
+              handlers[event].push(handler);
+            }
           },
-    };
-    mod.default(pi);
-
-    const result = await handlers[0]({
-      toolName: 'write',
-      input: { path: '/tmp/foo', content: 'bar' },
-    });
-    assert(result === undefined, 'ignores non-edit tools');
-  }
-
-  section('extension: tool_call ignores undefined edits');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const handlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call') handlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {
-        // no-op
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
+          registerTool(_tool: unknown): void {
+            // no-op: tests register only call hooks
           },
-    };
-    mod.default(pi);
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
+        assertEq(handlers.tool_call.length, 1, 'registers 1 tool_call handler');
+        assertEq(handlers.tool_result.length, 2, 'registers 2 tool_result handlers (error + formatter rewrite)');
+        assert(handlers.session_start.length >= 1, 'registers session_start handler for formatter config load');
+      }
 
-    const result = await handlers[0]({
-      toolName: 'edit',
-      input: { path: undefined, edits: [] },
-    });
-    assert(result === undefined, 'returns undefined when path/edits missing');
-  }
+      section('extension: tool_call autofixes indent drift (silent success)');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const dir = mkdtempSync(join(tmpdir(), 'edit-guard-autofix-'));
+        const testFile = join(dir, 'test.ts');
+        writeFileSync(
+          testFile,
+          [
+            'export function SoketiClient() {',
+            '      let pusherClient: Pusher | null = null;',
+            '      Object.values(SOKETI_EVENTS).forEach((eventName) => {',
+            '        // ... handler',
+            '      });',
+            '}',
+          ].join('\n'),
+        );
 
-  section('extension: tool_result mutates error in place');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const dir = mkdtempSync(join(tmpdir(), 'edit-guard-e2e-result-'));
-    const testFile = join(dir, 'test.ts');
-    writeFileSync(testFile, '    return 1;\n');
-
-    const resultHandlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_result') resultHandlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {
-        // no-op
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
+        const handlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_call') handlers.push(handler);
           },
-    };
-    mod.default(pi);
-
-    // We pass an oldText with WRONG indent (2sp) on a 4sp file → cascade sees
-    // a normalized-only match. Even though our tool_call hook would have
-    // autofixed this, we exercise the tool_result path with that exact
-    // scenario to confirm the legacy block message still works if the model
-    // somehow reaches tool_result in a non-autofix state.
-    const event = {
-      toolName: 'edit',
-      isError: true,
-      content: [{ type: 'text', text: 'Could not find the exact text' }],
-      input: {
-        path: testFile,
-        edits: [{ oldText: '  return 1;' }], // wrong indent (2sp, file is 4sp)
-      },
-    };
-
-    const result = await resultHandlers[0](event);
-    rmSync(dir, { recursive: true });
-
-    assert(result === undefined, 'returns undefined');
-    assert(event.isError === false, 'mutates isError to false (quiet-tools compatible)');
-    assertMatch(
-      event.content[0].text,
-      /Edit guard: 1 of 1 edit has issues/,
-      'replaces with consolidated report',
-    );
-  }
-
-  section('extension: tool_result no-op when no error');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const resultHandlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_result') resultHandlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {
-        // no-op
-      },
-          registerFlag(_flag: unknown): void {
-            // no-op: stub for jiti loading
+          registerTool(_tool: unknown): void {
+            // no-op
           },
-    };
-    mod.default(pi);
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
 
-    const event = {
-      toolName: 'edit',
-      isError: false,
-      content: [{ type: 'text', text: 'OK' }],
-      input: { path: '/tmp/foo.ts', edits: [{ oldText: 'a' }] },
-    };
+        const event = {
+          toolName: 'edit',
+          input: {
+            path: testFile,
+            edits: [
+              {
+                oldText: '  let pusherClient: Pusher | null = null;', // 2sp (wrong)
+                newText: '  const target = {};', // 2sp (will be shifted to 6sp)
+              },
+            ],
+          },
+        };
 
-    const result = await resultHandlers[0](event);
-    assert(result === undefined, 'returns undefined when no error');
-    assert(event.content[0].text === 'OK', 'content not touched');
+        const result = await handlers[0](event);
 
-  section('extension: session_start loads formatter config from project');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const dir = mkdtempSync(join(tmpdir(), 'pi-edit-guard-formatter-'));
-    const piDir = join(dir, '.pi', 'extensions', 'pi-edit-guard');
-    // Use a no-op formatter command so we don't accidentally invoke anything
-    mkdirSync(piDir, { recursive: true });
-    writeFileSync(
-      join(piDir, 'config.json'),
-      JSON.stringify({
-        commands: { fakefmt: ['true'] },
-        filetypes: { '*.ts': 'fakefmt' },
-      }),
-    );
-    writeFileSync(join(dir, 'foo.ts'), '    const a = 1;\n');
+        rmSync(dir, { recursive: true });
 
-    const sessionHandlers: Array<(e: unknown, ctx: unknown) => unknown> = [];
-    const toolCallHandlers: Array<(e: unknown, ctx: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown, ctx?: unknown) => unknown) {
-        if (event === 'session_start') sessionHandlers.push(handler);
-        if (event === 'tool_call') toolCallHandlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {},
+        assert(result === undefined, 'returns undefined (let native edit run)');
+        const fixedOld = (event.input as { edits: Array<{ oldText: string }> }).edits[0].oldText;
+        const fixedNew = (event.input as { edits: Array<{ newText: string }> }).edits[0].newText;
+        assertEq(
+          fixedOld,
+          '      let pusherClient: Pusher | null = null;',
+          'oldText mutated to file block (6sp)',
+        );
+        assertEq(fixedNew, '      const target = {};', 'newText shifted by +4 to match file indent');
+      }
+
+      section('extension: tool_call autofixes mixed ok+drift batch');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const dir = mkdtempSync(join(tmpdir(), 'edit-guard-mixed-'));
+        const testFile = join(dir, 'test.ts');
+        writeFileSync(testFile, 'const a = 1;\n    const b = 2;\n');
+
+        const handlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_call') handlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {
+            // no-op
+          },
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
+
+        const event = {
+          toolName: 'edit',
+          input: {
+            path: testFile,
+            edits: [
+              { oldText: 'const a = 1;', newText: 'const a = 99;' }, // ok-literal
+              { oldText: '  const b = 2;', newText: '  const b = 22;' }, // drift, autofixed
+            ],
+          },
+        };
+
+        const result = await handlers[0](event);
+
+        rmSync(dir, { recursive: true });
+
+        assert(result === undefined, 'returns undefined (mixed batch autofixed)');
+        const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
+        assertEq(edits[0].oldText, 'const a = 1;', 'edit 1 unchanged (was ok-literal)');
+        assertEq(edits[0].newText, 'const a = 99;', 'edit 1 newText unchanged');
+        assertEq(edits[1].oldText, '    const b = 2;', 'edit 2 oldText mutated to file block (4sp)');
+        assertEq(edits[1].newText, '    const b = 22;', 'edit 2 newText shifted to 4sp');
+      }
+
+      section('extension: tool_call atomically blocks when one edit is ambiguous');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const dir = mkdtempSync(join(tmpdir(), 'edit-guard-atomic-'));
+        const testFile = join(dir, 'test.ts');
+        // Two `});` lines → ambiguous-literal for edit 2 if pattern is just `});`
+        writeFileSync(testFile, 'a();\n  });\nb();\n  });\n');
+
+        const handlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_call') handlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {
+            // no-op
+          },
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
+
+        const event = {
+          toolName: 'edit',
+          input: {
+            path: testFile,
+            edits: [
+              { oldText: 'a();\n  });\nb();', newText: 'A();\n  });\nB();' }, // ok-literal
+              { oldText: '  });', newText: '  }); // done' }, // ambiguous (2 matches)
+            ],
+          },
+        };
+
+        const result = await handlers[0](event);
+
+        rmSync(dir, { recursive: true });
+
+        assert(result !== undefined, 'returns a result');
+        const r = result as { block: boolean; reason: string };
+        assert(r.block === true, 'blocks the call (atomic)');
+        assertMatch(r.reason, /Edit guard:.*1 of 2/, 'consolidated report counts the unfixable edit');
+        assertMatch(r.reason, /Edit 2:.*similar blocks/, 'edit 2 reported as ambiguous');
+        // Edit 1 should NOT have been mutated — atomic block means no input mutation.
+        const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
+        assertEq(edits[0].oldText, 'a();\n  });\nb();', 'edit 1 input untouched (no partial fix)');
+        assertEq(edits[1].oldText, '  });', 'edit 2 input untouched');
+      }
+
+      section('extension: tool_call blocks when fuzzy-match (no autofix for character diffs)');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const dir = mkdtempSync(join(tmpdir(), 'edit-guard-fuzzy-'));
+        const testFile = join(dir, 'test.ts');
+        // File has double digit; oldText has single digit. Same indent (4sp) so
+        // normalized match fails (return 11 != return 1) but fuzzy similarity ≈ 0.92
+        // → triggers fuzzy-match verdict (not drift, not no-match).
+        writeFileSync(testFile, '    return 11;\n');
+
+        const handlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_call') handlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {
+            // no-op
+          },
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
+
+        const event = {
+          toolName: 'edit',
+          input: {
+            path: testFile,
+            edits: [{ oldText: '    return 1;', newText: '    return 99;' }],
+          },
+        };
+
+        const result = await handlers[0](event);
+
+        rmSync(dir, { recursive: true });
+
+        assert(result !== undefined, 'returns a result');
+        const r = result as { block: boolean; reason: string };
+        assert(r.block === true, 'blocks the call (fuzzy is not autofixable)');
+        assertMatch(r.reason, /small difference from the file/, 'fuzzy-match message');
+        const edits = (event.input as { edits: Array<{ oldText: string }> }).edits;
+        assertEq(edits[0].oldText, '    return 1;', 'oldText untouched (no autofix for fuzzy)');
+      }
+
+      section('extension: tool_call passes when all edits ok');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const dir = mkdtempSync(join(tmpdir(), 'edit-guard-e2e-ok-'));
+        const testFile = join(dir, 'test.ts');
+        writeFileSync(testFile, 'const a = 1;\nconst b = 2;\n');
+
+        const handlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_call') handlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {
+            // no-op
+          },
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
+
+        const result = await handlers[0]({
+          toolName: 'edit',
+          input: {
+            path: testFile,
+            edits: [{ oldText: 'const a = 1;' }, { oldText: 'const b = 2;' }],
+          },
+        });
+
+        rmSync(dir, { recursive: true });
+
+        assert(result === undefined, 'returns undefined when all pass');
+      }
+
+      section('extension: tool_call ignores non-edit tools');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const handlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_call') handlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {
+            // no-op
+          },
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
+
+        const result = await handlers[0]({
+          toolName: 'write',
+          input: { path: '/tmp/foo', content: 'bar' },
+        });
+        assert(result === undefined, 'ignores non-edit tools');
+      }
+
+      section('extension: tool_call ignores undefined edits');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const handlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_call') handlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {
+            // no-op
+          },
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
+
+        const result = await handlers[0]({
+          toolName: 'edit',
+          input: { path: undefined, edits: [] },
+        });
+        assert(result === undefined, 'returns undefined when path/edits missing');
+      }
+
+      section('extension: tool_result mutates error in place');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const dir = mkdtempSync(join(tmpdir(), 'edit-guard-e2e-result-'));
+        const testFile = join(dir, 'test.ts');
+        writeFileSync(testFile, '    return 1;\n');
+
+        const resultHandlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_result') resultHandlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {
+            // no-op
+          },
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
+
+        // We pass an oldText with WRONG indent (2sp) on a 4sp file → cascade sees
+        // a normalized-only match. Even though our tool_call hook would have
+        // autofixed this, we exercise the tool_result path with that exact
+        // scenario to confirm the legacy block message still works if the model
+        // somehow reaches tool_result in a non-autofix state.
+        const event = {
+          toolName: 'edit',
+          isError: true,
+          content: [{ type: 'text', text: 'Could not find the exact text' }],
+          input: {
+            path: testFile,
+            edits: [{ oldText: '  return 1;' }], // wrong indent (2sp, file is 4sp)
+          },
+        };
+
+        const result = await resultHandlers[0](event);
+        rmSync(dir, { recursive: true });
+
+        assert(result === undefined, 'returns undefined');
+        assert(event.isError === false, 'mutates isError to false (quiet-tools compatible)');
+        assertMatch(
+          event.content[0].text,
+          /Edit guard: 1 of 1 edit has issues/,
+          'replaces with consolidated report',
+        );
+      }
+
+      section('extension: tool_result no-op when no error');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const resultHandlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_result') resultHandlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {
+            // no-op
+          },
+              registerFlag(_flag: unknown): void {
+                // no-op: stub for jiti loading
+              },
+        };
+        mod.default(pi);
+
+        const event = {
+          toolName: 'edit',
+          isError: false,
+          content: [{ type: 'text', text: 'OK' }],
+          input: { path: '/tmp/foo.ts', edits: [{ oldText: 'a' }] },
+        };
+
+        const result = await resultHandlers[0](event);
+        assert(result === undefined, 'returns undefined when no error');
+        assert(event.content[0].text === 'OK', 'content not touched');
+
+      section('extension: session_start loads formatter config from project');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const dir = mkdtempSync(join(tmpdir(), 'pi-edit-guard-formatter-'));
+        const piDir = join(dir, '.pi', 'extensions', 'pi-edit-guard');
+        // Use a no-op formatter command so we don't accidentally invoke anything
+        mkdirSync(piDir, { recursive: true });
+        writeFileSync(
+          join(piDir, 'config.json'),
+          JSON.stringify({
+            commands: { fakefmt: ['true'] },
+            filetypes: { '*.ts': 'fakefmt' },
+          }),
+        );
+        writeFileSync(join(dir, 'foo.ts'), '    const a = 1;\n');
+
+        const sessionHandlers: Array<(e: unknown, ctx: unknown) => unknown> = [];
+        const toolCallHandlers: Array<(e: unknown, ctx: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown, ctx?: unknown) => unknown) {
+            if (event === 'session_start') sessionHandlers.push(handler);
+            if (event === 'tool_call') toolCallHandlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {},
+              registerFlag(_flag: unknown): void {},
+          ui: { notify: (_msg: string, _level: string) => {} },
+          cwd: dir,
+          exec: async (_cmd: string, _args: string[], _opts: unknown) => ({
+            code: 0, stdout: '', stderr: '',
+          }),
+        };
+        mod.default(pi);
+
+        // Fire session_start with cwd = temp project dir
+        assert(sessionHandlers.length >= 1, 'session_start handler registered');
+        await sessionHandlers[0]({}, { cwd: dir, ui: { notify: () => {} } });
+
+        // Now fire a tool_call with a file matching the *.ts pattern.
+        // With formatter matched, autofix must correct oldText so native edit
+        // can find the block, but leave newText verbatim for the formatter to
+        // normalize post-edit. This is the trust-mode autofix: shiftNewText=false.
+        const event = {
+          toolName: 'edit',
+          input: {
+            path: join(dir, 'foo.ts'),
+            edits: [
+              { oldText: '  const a = 1;', newText: '  const a = 2;' }, // 2sp (wrong)
+            ],
+          },
+        };
+        const ctx = { cwd: dir, ui: { notify: () => {} } };
+        const result = await toolCallHandlers[0](event, ctx);
+
+        rmSync(dir, { recursive: true });
+
+        assert(result === undefined, 'returns undefined (formatter-trust passes through)');
+        const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
+        assertEq(edits[0].oldText, '    const a = 1;', 'oldText mutated to file block (4sp) so native edit can find it');
+        assertEq(edits[0].newText, '  const a = 2;', 'newText verbatim (formatter will normalize post-edit)');
+      }
+
+      section('extension: tool_call formatter-trust handles non-uniform drift (oldText-only)');
+      {
+        // Regression for v0.12.0 bug: formatterTrust skipped autofix entirely,
+        // so unique-drift edits failed with 'Could not find the exact text'.
+        // Fix: in trust mode (shiftNewText=false), autofix still mutates oldText
+        // to the file block verbatim so native edit succeeds; newText passes
+        // through for the formatter to normalize. Shift-related declines
+        // (non-uniform-delta, tab-in-newtext) become irrelevant in trust mode.
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const dir = mkdtempSync(join(tmpdir(), 'pi-edit-guard-formatter-nonuniform-'));
+        const piDir = join(dir, '.pi', 'extensions', 'pi-edit-guard');
+        mkdirSync(piDir, { recursive: true });
+        writeFileSync(
+          join(piDir, 'config.json'),
+          JSON.stringify({
+            commands: { fakefmt: ['true'] },
+            filetypes: { '*.ts': 'fakefmt' },
+          }),
+        );
+        // File: 0sp outer, 4sp inner. Model oldText: 0sp outer, 0sp inner.
+        // Drift is non-uniform (0 on outer, +4 on inner) — would decline in
+        // default mode with 'non-uniform-delta'. In trust mode shiftNewText is
+        // false so that decline is skipped and we still succeed.
+        writeFileSync(join(dir, 'multi.ts'), 'if (x) {\n    return 1;\n  }\n');
+
+        const sessionHandlers: Array<(e: unknown, ctx: unknown) => unknown> = [];
+        const toolCallHandlers: Array<(e: unknown, ctx: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown, ctx?: unknown) => unknown) {
+            if (event === 'session_start') sessionHandlers.push(handler);
+            if (event === 'tool_call') toolCallHandlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {},
           registerFlag(_flag: unknown): void {},
-      ui: { notify: (_msg: string, _level: string) => {} },
-      cwd: dir,
-      exec: async (_cmd: string, _args: string[], _opts: unknown) => ({
-        code: 0, stdout: '', stderr: '',
-      }),
-    };
-    mod.default(pi);
+          ui: { notify: (_msg: string, _level: string) => {} },
+          cwd: dir,
+          exec: async (_cmd: string, _args: string[], _opts: unknown) => ({
+            code: 0, stdout: '', stderr: '',
+          }),
+        };
+        mod.default(pi);
 
-    // Fire session_start with cwd = temp project dir
-    assert(sessionHandlers.length >= 1, 'session_start handler registered');
-    await sessionHandlers[0]({}, { cwd: dir, ui: { notify: () => {} } });
+        await sessionHandlers[0]({}, { cwd: dir, ui: { notify: () => {} } });
 
-    // Now fire a tool_call with a file matching the *.ts pattern.
-    // With formatter matched, autofix must NOT mutate the input
-    // (formatter-trust mode passes through verbatim).
-    const event = {
-      toolName: 'edit',
-      input: {
-        path: join(dir, 'foo.ts'),
-        edits: [
-          { oldText: '  const a = 1;', newText: '  const a = 2;' }, // 2sp (wrong)
-        ],
-      },
-    };
-    const ctx = { cwd: dir, ui: { notify: () => {} } };
-    const result = await toolCallHandlers[0](event, ctx);
+        const event = {
+          toolName: 'edit',
+          input: {
+            path: join(dir, 'multi.ts'),
+            edits: [
+              {
+                oldText: 'if (x) {\n  return 1;\n}',
+                newText: 'if (x) {\n  return 2;\n}',
+              },
+            ],
+          },
+        };
+        const ctx = { cwd: dir, ui: { notify: () => {} } };
+        const result = await toolCallHandlers[0](event, ctx);
 
-    rmSync(dir, { recursive: true });
+        rmSync(dir, { recursive: true });
 
-    assert(result === undefined, 'returns undefined (formatter-trust passes through)');
-    const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
-    assertEq(edits[0].oldText, '  const a = 1;', 'oldText untouched (formatter-trust mode)');
-    assertEq(edits[0].newText, '  const a = 2;', 'newText untouched (formatter-trust mode)');
-  }
+        assert(result === undefined, 'returns undefined (non-uniform drift handled in trust mode)');
+        const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
+        assertEq(
+          edits[0].oldText,
+          'if (x) {\n    return 1;\n  }',
+          'oldText mutated to file block verbatim (cascade already matched this)',
+        );
+        assertEq(
+          edits[0].newText,
+          'if (x) {\n  return 2;\n}',
+          'newText verbatim (formatter will normalize; non-uniform-delta not enforced in trust mode)',
+        );
+      }
 
-  section('extension: tool_call autofix still runs when no formatter matches');
-  {
-    const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
-    const dir = mkdtempSync(join(tmpdir(), 'pi-edit-guard-no-formatter-'));
-    // No config file: formatter integration is inactive.
-    writeFileSync(join(dir, 'bar.js'), '    const a = 1;\n');
+      section('extension: tool_call autofix still runs when no formatter matches');
+      {
+        const mod = jiti(join(import.meta.dirname, '..', 'index.ts'));
+        const dir = mkdtempSync(join(tmpdir(), 'pi-edit-guard-no-formatter-'));
+        // No config file: formatter integration is inactive.
+        writeFileSync(join(dir, 'bar.js'), '    const a = 1;\n');
 
-    const handlers: Array<(e: unknown) => unknown> = [];
-    const pi = {
-      on(event: string, handler: (e: unknown) => unknown) {
-        if (event === 'tool_call') handlers.push(handler);
-      },
-      registerTool(_tool: unknown): void {},
-          registerFlag(_flag: unknown): void {},
-    };
-    mod.default(pi);
+        const handlers: Array<(e: unknown) => unknown> = [];
+        const pi = {
+          on(event: string, handler: (e: unknown) => unknown) {
+            if (event === 'tool_call') handlers.push(handler);
+          },
+          registerTool(_tool: unknown): void {},
+              registerFlag(_flag: unknown): void {},
+        };
+        mod.default(pi);
 
-    const event = {
-      toolName: 'edit',
-      input: {
-        path: join(dir, 'bar.js'),
-        edits: [
-          { oldText: '  const a = 1;', newText: '  const a = 2;' }, // 2sp (wrong, will be autofixed)
-        ],
-      },
-    };
-    const ctx = { cwd: dir, ui: { notify: () => {} } };
-    const result = await handlers[0](event, ctx);
-    void result;
+        const event = {
+          toolName: 'edit',
+          input: {
+            path: join(dir, 'bar.js'),
+            edits: [
+              { oldText: '  const a = 1;', newText: '  const a = 2;' }, // 2sp (wrong, will be autofixed)
+            ],
+          },
+        };
+        const ctx = { cwd: dir, ui: { notify: () => {} } };
+        const result = await handlers[0](event, ctx);
+        void result;
 
-    rmSync(dir, { recursive: true });
+        rmSync(dir, { recursive: true });
 
-    const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
-    assertEq(edits[0].oldText, '    const a = 1;', 'oldText mutated to file block (4sp) - autofix ran');
-    assertEq(edits[0].newText, '    const a = 2;', 'newText shifted to 4sp - autofix ran');
-  }
-  }
-}
+        const edits = (event.input as { edits: Array<{ oldText: string; newText: string }> }).edits;
+        assertEq(edits[0].oldText, '    const a = 1;', 'oldText mutated to file block (4sp) - autofix ran');
+        assertEq(edits[0].newText, '    const a = 2;', 'newText shifted to 4sp - autofix ran');
+      }
+      }
+    }
+
+

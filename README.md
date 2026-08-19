@@ -32,9 +32,9 @@ tail -f /tmp/pi-edit-guard-$(pgrep -f "pi-coding-agent" | head -1).log
 ```
 
 If the extension is intercepting correctly, you'll see one JSON line per
-edit with fields like `result: "autofixed"`, `result: "blocked"`, or
-`result: "pass-formatter-trust"` (when a formatter is configured — see
-next section).
+edit with fields like `result: "autofixed"` (silent correction), `result: "blocked"`
+(atomic block with consolidated report), or `result: "formatter-rewritten"`
+(formatter applied after a successful native edit).
 
 ### Optional: configure a formatter
 
@@ -465,7 +465,8 @@ Fields per log entry:
 | `edits[i].newTextBytes` / `newTextSha` / `newTextPreview` / `newTextLeadingSpaces` | What the model wants to write. |
 | `edits[i].evaluationKind` | `ok-literal`, `unique-drift`, `fuzzy-match`, `ambiguous-*`, `no-match`. |
 | `edits[i].autofixOutcome` | `ok` (with `autofixDelta`) \| `declined` (with `declineReason`) \| `n/a`. |
-| `result` | `autofixed` \| `blocked` (with `blockReasonBytes`) \| `pass` \| `pass-oversized` \| `pass-unreadable` \| `pass-formatter-trust` (formatter matched; autofix skipped) \| `formatter-rewritten` \| `formatter-noop` \| `formatter-failed`. |
+| `result` | `autofixed` \| `blocked` (with `blockReasonBytes`) \| `pass` \| `pass-oversized` \| `pass-unreadable` \| `formatter-rewritten` \| `formatter-noop` \| `formatter-failed`. |
+| `formatterMatched` | True when a formatter was configured and matched this file's path. Orthogonal to `result` — when present with `result: 'autofixed'`, the autofix ran in trust mode (corrected oldText only, left newText verbatim for the formatter). |
 | `autofixedCount` | Number of edits silently corrected (only present when `result: 'autofixed'`). |
 | `snapshotPath` | Absolute path to the saved file snapshot (always present by default; absent when `LOG_SNAPSHOTS=0`). |
 | `nativeError` | What the native edit tool returned (only on `tool_result` events with `isError`). Shows what the model actually saw. |
