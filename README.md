@@ -21,9 +21,18 @@ place so native edit succeeds.
 
 ### Verify it works
 
-The debug logger is **on by default** and writes one NDJSON line per edit
-to `/tmp/pi-edit-guard-<pid>.log`. Run a model turn that touches a file
-and check the log:
+The debug logger is **off by default** — no files are written to `/tmp`
+unless you opt in. To capture a session for triage, set the env vars
+before launching Pi:
+
+```bash
+PI_EDIT_GUARD_DEBUG=1 pi   # capture one NDJSON line per edit
+PI_EDIT_GUARD_DEBUG=1 PI_EDIT_GUARD_LOG_FULL=1 PI_EDIT_GUARD_LOG_SNAPSHOTS=1 pi  # full content + file snapshots
+```
+
+Once enabled, the log goes to `/tmp/pi-edit-guard-<pid>.log` (override
+with `PI_EDIT_GUARD_LOG_PATH=...`). Run a model turn that touches a file
+and inspect:
 
 ```bash
 # in one terminal
@@ -69,8 +78,10 @@ session, set the env var before launching Pi:
 # Bypass autofix but keep cascade (lets an external formatter handle drift):
 PI_EDIT_GUARD_TRUST_FORMATTER=1 pi
 
-# Silence the debug log (every other feature stays active):
-PI_EDIT_GUARD_DEBUG=0 pi
+# Capture a debug session (default is OFF — no files written unless opted in):
+PI_EDIT_GUARD_DEBUG=1 pi
+# Full content + file snapshots for richer triage:
+PI_EDIT_GUARD_DEBUG=1 PI_EDIT_GUARD_LOG_FULL=1 PI_EDIT_GUARD_LOG_SNAPSHOTS=1 pi
 ```
 
 There's no kill switch that disables the extension entirely — the
@@ -442,16 +453,20 @@ when a config file is present, but kept for users who already rely on it.
 
 ## Debug logging (production triage)
 
-The debug logger is **on by default**: every cascade invocation writes one NDJSON line to `/tmp/pi-edit-guard-<pid>.log` with full `oldText` / `newText` content and a verbatim file snapshot under `/tmp/pi-edit-guard-<pid>/snapshots/<sha>.orig`. No env vars needed to turn any of this on.
-
-If you want to silence one of the three flags, set it to `0`:
+The debug logger is **off by default** — no files are written to `/tmp`
+unless you opt in. To capture a session for triage, set the env vars
+before launching Pi:
 
 ```bash
-PI_EDIT_GUARD_DEBUG=0 \              # silence the NDJSON log
-PI_EDIT_GUARD_LOG_FULL=0 \            # redact to sha + length + 200-char preview
-PI_EDIT_GUARD_LOG_SNAPSHOTS=0 \      # skip file snapshots
+PI_EDIT_GUARD_DEBUG=1 \                      # enable the NDJSON log (sha + length + 200-char preview)
+PI_EDIT_GUARD_LOG_FULL=1 \                   # log full oldText/newText content
+PI_EDIT_GUARD_LOG_SNAPSHOTS=1 \              # save verbatim file snapshots
 pi
 ```
+
+When enabled, the log goes to `/tmp/pi-edit-guard-<pid>.log` with one
+NDJSON line per cascade invocation. With `LOG_SNAPSHOTS=1`, snapshots
+go to `/tmp/pi-edit-guard-<pid>/snapshots/<sha>.orig`.
 
 Fields per log entry:
 
@@ -484,11 +499,11 @@ The log rotates at 5 MB. Snapshots are capped at 200 files / 100MB total (oldest
 PI_EDIT_GUARD_LOG_PATH=./edit-guard.log pi
 ```
 
-Snapshots go to `./snapshots/` (i.e. `<dirname(log-path)>/snapshots/`).
+Snapshots go to `./edit-guard/snapshots/` (i.e. `<dirname(log-path)>/<basename-without-ext>/snapshots/`). The grouping is per log file so that all artifacts from one session live together — `rm -rf /tmp/pi-edit-guard-*` is enough to clean up both the log and snapshots.
 
 ### Triage workflow
 
-1. Reproduce the issue with the default config (no env vars needed — everything is on).
+1. Reproduce the issue with debug logging enabled: `PI_EDIT_GUARD_DEBUG=1 pi` (or `+LOG_FULL=1+LOG_SNAPSHOTS=1` for richer triage).
 2. `cat <log-path> | jq .` (or use any NDJSON viewer).
 3. Filter by `source` to see what the extension intercepted (`tool_call`) vs what came back from native (`tool_result`). On `tool_result` with `nativeError`, you'll see exactly what the model saw.
 4. If `snapshotPath` is set, `cat <snapshotPath>` shows the file at edit time.
@@ -501,13 +516,15 @@ Snapshots go to `./snapshots/` (i.e. `<dirname(log-path)>/snapshots/`).
 | `PI_EDIT_GUARD_THRESHOLD` | `0.90` | n/a | Similarity threshold for fuzzy matches (Level 3). Lower = more permissive. |
 | `PI_EDIT_GUARD_EXAMPLES` | `3` | n/a | Max number of example blocks shown for ambiguous cases. |
 | `PI_EDIT_GUARD_HINT_MIN` | `0.50` | n/a | Min similarity to show the closest block as hint in no-match messages. |
-| `PI_EDIT_GUARD_DEBUG` | **ON** | `=0` | NDJSON debug log written per cascade invocation. |
-| `PI_EDIT_GUARD_LOG_PATH` | `/tmp/pi-edit-guard-<pid>.log` | n/a | Where the NDJSON log goes. Snapshot dir is `<dirname>/snapshots/`. |
-| `PI_EDIT_GUARD_LOG_FULL` | **ON** | `=0` | Log full `oldText`/`newText` content instead of 200-char preview. |
-| `PI_EDIT_GUARD_LOG_SNAPSHOTS` | **ON** | `=0` | Save a verbatim copy of the file at edit time to `<log-dir>/snapshots/<sha>.orig`. Dedupe by sha, capped at 200 files / 100MB. |
+| `PI_EDIT_GUARD_DEBUG` | **OFF** | `=1` | NDJSON debug log written per cascade invocation. Off by default — no `/tmp` files unless opted in. |
+| `PI_EDIT_GUARD_LOG_PATH` | `/tmp/pi-edit-guard-<pid>.log` | n/a | Where the NDJSON log goes when enabled. Snapshots go to `<dirname>/<basename-without-ext>/snapshots/` (e.g. `/tmp/pi-edit-guard-<pid>/snapshots/`). Only consulted when `PI_EDIT_GUARD_DEBUG=1`. |
+| `PI_EDIT_GUARD_LOG_SNAPSHOTS` | **OFF** | `=1` | Save a verbatim copy of the file at edit time to `<log-dir>/snapshots/<sha>.orig` (e.g. `/tmp/pi-edit-guard-<pid>/snapshots/<sha>.orig`). Dedupe by sha, capped at 200 files / 100MB. Off by default — no snapshot directory is created unless opted in. |
 | `PI_EDIT_GUARD_TRUST_FORMATTER` | unset | `=0` | Opt-in trust mode: skip autofix, pass `newText` verbatim to native edit. Designed for projects that run an external formatter (`pi-autoformat`, biome, prettier, etc.) alongside this extension. The cascade still validates; ambiguous/fuzzy/no-match still block. Also registered as `--trust-formatter` CLI flag for discoverability. Redundant when an auto-format config file is present (v0.12.0+); the config file is the preferred opt-in path. |
 
-All three log flags default to ON. Set the env var to `0`, `false`, or `no` to disable that flag. `1` / `true` / `yes` still works (redundant with default but explicit).
+All three log flags default to OFF — no `/tmp` files are created unless
+you opt in. Set the env var to `1`, `true`, or `yes` to enable that flag.
+`0` / `false` / `no` is also accepted (no-op with the new defaults, but
+explicit).
 
 Set before launching Pi:
 

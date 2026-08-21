@@ -1,21 +1,24 @@
 /**
  * Tests for the debug logger (`src/debug.ts`).
  *
- * The debug logger defaults to ON (writes NDJSON to
- * `/tmp/pi-edit-guard-<pid>.log`). All three flags are opt-out:
- *   - PI_EDIT_GUARD_DEBUG=0       silence the log entirely
- *   - PI_EDIT_GUARD_LOG_FULL=0    redact to sha + length + preview
- *   - PI_EDIT_GUARD_LOG_SNAPSHOTS=0   skip file snapshots
+ * The debug logger defaults to OFF — no `/tmp` files are created unless
+ * you opt in. All three flags are opt-in:
+ *   - PI_EDIT_GUARD_DEBUG=1          enable the NDJSON log
+ *   - PI_EDIT_GUARD_LOG_FULL=1       log full oldText/newText instead of preview
+ *   - PI_EDIT_GUARD_LOG_SNAPSHOTS=1  save file snapshots under <log-dir>/snapshots/
+ *
+ * Opt-in is satisfied by `1`, `true`, or `yes`. Any other value (unset,
+ * `0`, `false`, `no`) leaves the corresponding feature disabled.
  *
  * These tests verify:
- *   1. Default-on behavior for all three flags.
- *   2. Opt-out works via `=0` / `false` / `no`.
+ *   1. Default-off behavior for all three flags.
+ *   2. Opt-in via `=1` enables; `=0` / `false` / `no` do NOT enable.
  *   3. NDJSON shape includes `source` and `nativeError` fields.
  *   4. Snapshot dedupe by sha, cap by count, custom log path, FS error tolerance.
  */
 
 import { existsSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 
 import {
   _resetEnabledCache,
@@ -27,7 +30,9 @@ import {
 import { assert, assertEq, section } from './_framework.ts';
 
 const LOG_PATH = `/tmp/pi-edit-guard-${process.pid}.log`;
-const SNAPSHOTS_DIR = join(dirname(LOG_PATH), 'snapshots');
+// Per-pid snapshot dir: /tmp/pi-edit-guard-<pid>/snapshots/. Derived the
+// same way src/debug.ts::snapshotsDir() does — keep them in sync.
+const SNAPSHOTS_DIR = join(dirname(LOG_PATH), basename(LOG_PATH, extname(LOG_PATH)), 'snapshots');
 
 function withEnv(name: string, value: string | undefined, fn: () => void): void {
   const prev = process.env[name];
@@ -68,8 +73,17 @@ function readLogLines(): Array<Record<string, unknown>> {
     .map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
+/**
+ * Snapshot tests must run inside `enableSnapshots()` to flip the master
+ * switch on; with the new opt-in default, `saveFileSnapshot` returns null
+ * outside this block.
+ */
+function enableSnapshots(fn: () => void): void {
+  withEnv('PI_EDIT_GUARD_LOG_SNAPSHOTS', '1', fn);
+}
+
 export function run(): void {
-  section('debug: ON by default; opt-out via PI_EDIT_GUARD_DEBUG=0');
+  section('debug: OFF by default; opt-in via PI_EDIT_GUARD_DEBUG=1');
   clearLog();
   withEnv('PI_EDIT_GUARD_DEBUG', undefined, () => {
     appendDebug({
@@ -78,7 +92,7 @@ export function run(): void {
       result: 'pass',
     });
   });
-  assert(existsSync(LOG_PATH), 'log file created when env unset (default on)');
+  assert(!existsSync(LOG_PATH), 'log file NOT created when env unset (default off)');
 
   clearLog();
   withEnv('PI_EDIT_GUARD_DEBUG', '0', () => {
@@ -88,9 +102,9 @@ export function run(): void {
       result: 'pass',
     });
   });
-  assert(!existsSync(LOG_PATH), 'log file NOT created when env=0');
+  assert(!existsSync(LOG_PATH), 'log file NOT created when env=0 (no-op with default off)');
 
-  section('debug: explicit PI_EDIT_GUARD_DEBUG=1 still works (redundant with default)');
+  section('debug: explicit PI_EDIT_GUARD_DEBUG=1 enables the log');
   {
     clearLog();
     withEnv('PI_EDIT_GUARD_DEBUG', '1', () => {
@@ -105,56 +119,40 @@ export function run(): void {
     assertEq(lines[0].result, 'pass', 'round-trip via NDJSON preserves fields');
   }
 
-  section('debug: false and no also disable');
+  section('debug: true and yes also enable');
+  clearLog();
+  withEnv('PI_EDIT_GUARD_DEBUG', 'true', () => {
+    appendDebug({ timestamp: '2024-01-01T00:00:00Z', edits: [], result: 'pass' });
+  });
+  assert(existsSync(LOG_PATH), 'env=true enables the log');
+
+  clearLog();
+  withEnv('PI_EDIT_GUARD_DEBUG', 'yes', () => {
+    appendDebug({ timestamp: '2024-01-01T00:00:00Z', edits: [], result: 'pass' });
+  });
+  assert(existsSync(LOG_PATH), 'env=yes enables the log');
+
+  section('debug: false and no do NOT enable (only 1/true/yes opt in)');
   clearLog();
   withEnv('PI_EDIT_GUARD_DEBUG', 'false', () => {
     appendDebug({ timestamp: '2024-01-01T00:00:00Z', edits: [], result: 'pass' });
   });
-  assert(!existsSync(LOG_PATH), 'env=false disables');
+  assert(!existsSync(LOG_PATH), 'env=false does not enable');
 
   clearLog();
   withEnv('PI_EDIT_GUARD_DEBUG', 'no', () => {
     appendDebug({ timestamp: '2024-01-01T00:00:00Z', edits: [], result: 'pass' });
   });
-  assert(!existsSync(LOG_PATH), 'env=no disables');
+  assert(!existsSync(LOG_PATH), 'env=no does not enable');
 
-  section('debug: full content logged by default; PI_EDIT_GUARD_LOG_FULL=0 redacts');
+  section('debug: preview is REDACTED by default; PI_EDIT_GUARD_LOG_FULL=1 logs full content');
   {
     clearLog();
     const bigOldText = '  return 1;\n'.repeat(100); // 1100+ bytes
     withEnv('PI_EDIT_GUARD_DEBUG', '1', () => {
-      appendDebug({
-        timestamp: '2024-01-01T00:00:00Z',
-        path: '/tmp/test.ts',
-        edits: [
-          {
-            oldTextBytes: bigOldText.length,
-            oldTextSha: 'placeholder',
-            oldTextPreview: bigOldText,
-            oldTextLeadingSpaces: 2,
-            newTextBytes: 0,
-            newTextSha: 'na',
-            newTextPreview: '',
-            newTextLeadingSpaces: 0,
-            evaluationKind: 'unique-drift',
-            autofixOutcome: 'declined',
-            declineReason: 'tab-in-newtext',
-          },
-        ],
-        result: 'blocked',
-      });
-    });
-    const rawLog = readFileSync(LOG_PATH, 'utf-8');
-    // JSON.stringify escapes newlines as \\n; raw log has escaped form.
-    // Needle mirrors the source string (with the leading two spaces).
-    assert(
-      rawLog.includes('  return 1;\\n'.repeat(50)),
-      'full content present by default (escaped newlines)',
-    );
-
-    clearLog();
-    withEnv('PI_EDIT_GUARD_DEBUG', '1', () => {
-      withEnv('PI_EDIT_GUARD_LOG_FULL', '0', () => {
+      withEnv('PI_EDIT_GUARD_LOG_FULL', undefined, () => {
+        // describeText is what the production code uses to populate `preview`;
+        // by default (LOG_FULL unset) it returns the 200-char truncated form.
         const oldTextInfo = describeText(bigOldText);
         appendDebug({
           timestamp: '2024-01-01T00:00:00Z',
@@ -181,9 +179,43 @@ export function run(): void {
     const redactedLog = readFileSync(LOG_PATH, 'utf-8');
     assert(
       !redactedLog.includes('  return 1;\\n'.repeat(50)),
-      'full content absent when LOG_FULL=0',
+      'full content absent by default (LOG_FULL unset redacts)',
     );
-    assert(redactedLog.includes('[+'), 'truncation marker present when redacted');
+    assert(redactedLog.includes('[+'), 'truncation marker present by default');
+
+    clearLog();
+    withEnv('PI_EDIT_GUARD_DEBUG', '1', () => {
+      withEnv('PI_EDIT_GUARD_LOG_FULL', '1', () => {
+        const oldTextInfo = describeText(bigOldText);
+        appendDebug({
+          timestamp: '2024-01-01T00:00:00Z',
+          path: '/tmp/test.ts',
+          edits: [
+            {
+              oldTextBytes: oldTextInfo.bytes,
+              oldTextSha: oldTextInfo.sha,
+              oldTextPreview: oldTextInfo.preview,
+              oldTextLeadingSpaces: oldTextInfo.leadingSpaces,
+              newTextBytes: 0,
+              newTextSha: 'na',
+              newTextPreview: '',
+              newTextLeadingSpaces: 0,
+              evaluationKind: 'unique-drift',
+              autofixOutcome: 'declined',
+              declineReason: 'tab-in-newtext',
+            },
+          ],
+          result: 'blocked',
+        });
+      });
+    });
+    const fullLog = readFileSync(LOG_PATH, 'utf-8');
+    // JSON.stringify escapes newlines as \\n; raw log has escaped form.
+    // Needle mirrors the source string (with the leading two spaces).
+    assert(
+      fullLog.includes('  return 1;\\n'.repeat(50)),
+      'full content present when LOG_FULL=1 (escaped newlines)',
+    );
   }
 
   section('debug: describeText counts leading spaces');
@@ -210,19 +242,24 @@ export function run(): void {
     assertEq(info.trailingNewlines, 2, '2 trailing newlines');
   }
 
-  section('debug: describeText preview is full by default; LOG_FULL=0 truncates at 200 chars');
+  section('debug: describeText preview is REDACTED by default; LOG_FULL=1 returns full content');
   {
     const long = 'x'.repeat(500);
     withEnv('PI_EDIT_GUARD_LOG_FULL', undefined, () => {
       const info = describeText(long);
       assertEq(info.bytes, 500, 'bytes accurate');
-      assertEq(info.preview, long, 'preview is the full content (default on)');
+      assert(info.preview.startsWith('x'.repeat(200)), 'starts with 200 x chars by default');
+      assert(info.preview.includes('[+300 chars]'), 'indicates remaining length by default');
+    });
+    withEnv('PI_EDIT_GUARD_LOG_FULL', '1', () => {
+      const info = describeText(long);
+      assertEq(info.bytes, 500, 'bytes accurate when full');
+      assertEq(info.preview, long, 'preview is the full content when LOG_FULL=1');
     });
     withEnv('PI_EDIT_GUARD_LOG_FULL', '0', () => {
       const info = describeText(long);
-      assert(info.preview.startsWith('x'.repeat(200)), 'starts with 200 x chars when redacted');
-      assert(info.preview.includes('[+300 chars]'), 'indicates remaining length when redacted');
-      assertEq(info.bytes, 500, 'byte count is full length');
+      assert(info.preview.startsWith('x'.repeat(200)), 'LOG_FULL=0 redacts (same as default)');
+      assert(info.preview.includes('[+300 chars]'), 'LOG_FULL=0 truncates');
     });
   }
 
@@ -268,70 +305,83 @@ export function run(): void {
     assert(!('source' in lines[0]), 'source field absent when not passed');
   }
 
-  section('debug: snapshot SAVED by default; PI_EDIT_GUARD_LOG_SNAPSHOTS=0 disables');
+  section('debug: snapshot OFF by default; PI_EDIT_GUARD_LOG_SNAPSHOTS=1 enables');
   clearLog();
   clearSnapshots();
   withEnv('PI_EDIT_GUARD_LOG_SNAPSHOTS', undefined, () => {
     const result = saveFileSnapshot('hello world');
-    assert(result !== null, 'returns a path when env unset (default on)');
-    assert(existsSync(result!), 'snapshot file actually created by default');
+    assertEq(result, null, 'returns null when env unset (default off)');
   });
+  assert(!existsSync(SNAPSHOTS_DIR), 'snapshots dir not created by default');
 
   clearSnapshots();
   withEnv('PI_EDIT_GUARD_LOG_SNAPSHOTS', '0', () => {
     const result = saveFileSnapshot('hello world');
-    assertEq(result, null, 'returns null when env=0');
+    assertEq(result, null, 'returns null when env=0 (no-op with default off)');
   });
-  assert(!existsSync(SNAPSHOTS_DIR), 'snapshots dir not created when disabled');
+  assert(!existsSync(SNAPSHOTS_DIR), 'snapshots dir not created when explicitly disabled');
 
-  section('debug: snapshot full content round-trip');
+  section('debug: snapshot full content round-trip (LOG_SNAPSHOTS=1)');
   {
     clearLog();
     clearSnapshots();
     const content = 'const x = 1;\nconst y = 2;\n';
-    const path = saveFileSnapshot(content);
-    assert(path !== null, 'returns a path when env var on');
-    assert(path!.endsWith('.orig'), 'file extension is .orig');
-    assert(existsSync(path!), 'snapshot file actually created');
-    const written = readFileSync(path!, 'utf-8');
-    assertEq(written, content, 'snapshot content matches input verbatim');
+    enableSnapshots(() => {
+      const path = saveFileSnapshot(content);
+      assert(path !== null, 'returns a path when env=1');
+      assert(path!.endsWith('.orig'), 'file extension is .orig');
+      assert(existsSync(path!), 'snapshot file actually created');
+      const written = readFileSync(path!, 'utf-8');
+      assertEq(written, content, 'snapshot content matches input verbatim');
+    });
   }
 
-  section('debug: snapshot dedupe by sha — same content → same file');
+  section('debug: snapshot dedupe by sha — same content → same file (LOG_SNAPSHOTS=1)');
   {
     clearSnapshots();
-    const first = saveFileSnapshot('alpha-content');
-    const second = saveFileSnapshot('alpha-content');
-    assertEq(first, second, 'returns same path for same content');
-    const files = readdirSync(SNAPSHOTS_DIR).filter((f) => f.endsWith('.orig'));
-    assertEq(files.length, 1, 'only one snapshot file for identical content');
+    enableSnapshots(() => {
+      const first = saveFileSnapshot('alpha-content');
+      const second = saveFileSnapshot('alpha-content');
+      assertEq(first, second, 'returns same path for same content');
+      const files = readdirSync(SNAPSHOTS_DIR).filter((f) => f.endsWith('.orig'));
+      assertEq(files.length, 1, 'only one snapshot file for identical content');
+    });
   }
 
-  section('debug: snapshot dedupe — different content → different files');
+  section('debug: snapshot dedupe — different content → different files (LOG_SNAPSHOTS=1)');
   {
     clearSnapshots();
-    saveFileSnapshot('content-A');
-    saveFileSnapshot('content-B');
-    const files = readdirSync(SNAPSHOTS_DIR).filter((f) => f.endsWith('.orig'));
-    assertEq(files.length, 2, 'two snapshots for two distinct contents');
+    enableSnapshots(() => {
+      saveFileSnapshot('content-A');
+      saveFileSnapshot('content-B');
+      const files = readdirSync(SNAPSHOTS_DIR).filter((f) => f.endsWith('.orig'));
+      assertEq(files.length, 2, 'two snapshots for two distinct contents');
+    });
   }
 
   section('debug: snapshot handles empty content');
   {
     clearSnapshots();
-    const result = saveFileSnapshot('');
-    assertEq(result, null, 'empty content → no snapshot');
+    enableSnapshots(() => {
+      const result = saveFileSnapshot('');
+      assertEq(result, null, 'empty content → no snapshot');
+    });
   }
 
   section('debug: PI_EDIT_GUARD_LOG_PATH overrides default log path');
   {
     clearLog();
     const customPath = '/tmp/peg-test-custom-path.log';
+    const customSnapDir = join(
+      dirname(customPath),
+      basename(customPath, extname(customPath)),
+      'snapshots',
+    );
     try {
       unlinkSync(customPath);
     } catch {}
     try {
-      rmSync(join(dirname(customPath), 'snapshots'), { recursive: true, force: true });
+      rmSync(customSnapDir, { recursive: true, force: true });
     } catch {}
 
     withEnv('PI_EDIT_GUARD_DEBUG', '1', () => {
@@ -341,12 +391,21 @@ export function run(): void {
           edits: [],
           result: 'pass',
         });
-        const snapPath = saveFileSnapshot('custom-snapshot-content');
-        assert(
-          snapPath!.includes(dirname(customPath)),
-          'snapshot dir derived from custom log path',
-        );
-        assert(existsSync(snapPath!), 'snapshot written under custom path');
+        // Opt in to snapshots for this assertion block; with the new
+        // default-off semantics, `saveFileSnapshot` would return null here
+        // unless LOG_SNAPSHOTS=1.
+        withEnv('PI_EDIT_GUARD_LOG_SNAPSHOTS', '1', () => {
+          const snapPath = saveFileSnapshot('custom-snapshot-content');
+          assert(
+            snapPath !== null,
+            'snapshot path returned when LOG_SNAPSHOTS=1',
+          );
+          assert(
+            snapPath!.startsWith(customSnapDir),
+            'snapshot dir derived per-pid from custom log path',
+          );
+          assert(existsSync(snapPath!), 'snapshot written under custom path');
+        });
       });
     });
 
@@ -357,7 +416,7 @@ export function run(): void {
       unlinkSync(customPath);
     } catch {}
     try {
-      rmSync(join(dirname(customPath), 'snapshots'), { recursive: true, force: true });
+      rmSync(customSnapDir, { recursive: true, force: true });
     } catch {}
   }
 
@@ -367,8 +426,10 @@ export function run(): void {
       rmSync(SNAPSHOTS_DIR, { recursive: true, force: true });
     } catch {}
     writeFileSync(SNAPSHOTS_DIR, 'I am a regular file, not a directory.');
-    const result = saveFileSnapshot('cannot-write-here');
-    assertEq(result, null, 'returns null when mkdir/write fails');
+    enableSnapshots(() => {
+      const result = saveFileSnapshot('cannot-write-here');
+      assertEq(result, null, 'returns null when mkdir/write fails');
+    });
     try {
       unlinkSync(SNAPSHOTS_DIR);
     } catch {}

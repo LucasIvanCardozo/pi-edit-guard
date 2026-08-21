@@ -38,16 +38,6 @@ function _getBoolEnv(name: string): boolean {
   return v === '1' || v === 'true' || v === 'yes';
 }
 
-/**
- * Returns true when the env var is explicitly set to a falsy value
- * (`0` / `false` / `no`). Used to flip opt-in flags into opt-out: the
- * default is "feature on"; only an explicit falsy value disables it.
- */
-function isEnvFalsy(name: string): boolean {
-  const v = process.env[name];
-  return v === '0' || v === 'false' || v === 'no';
-}
-
 export function getThreshold(): number {
   return getFloatEnv('PI_EDIT_GUARD_THRESHOLD', DEFAULT_THRESHOLD);
 }
@@ -62,39 +52,44 @@ export function getHintMinSimilarity(): number {
 
 /**
  * Path for the debug NDJSON log. Defaults to `/tmp/pi-edit-guard-<pid>.log`.
- * Snapshots (when enabled) are written to `<dirname>/snapshots/`.
+ * Snapshots (when enabled) are written to `<dirname>/<basename-without-ext>/snapshots/`
+ * (e.g. `/tmp/pi-edit-guard-<pid>/snapshots/`). Only
+ * consulted when `isDebugEnabled()` returns true — by default, no file is
+ * created on disk.
  */
 export function getLogPath(): string {
   return process.env.PI_EDIT_GUARD_LOG_PATH ?? `/tmp/pi-edit-guard-${process.pid}.log`;
 }
 
 /**
- * Master switch for the NDJSON debug log. Default ON; set to `0` / `false`
- * / `no` to silence the log. The log writes sha + length + preview by
- * default; combine with `PI_EDIT_GUARD_LOG_FULL` and `PI_EDIT_GUARD_LOG_SNAPSHOTS`
- * for richer output.
+ * Master switch for the NDJSON debug log. Default OFF — no `/tmp` files
+ * are created unless you opt in. Enable with `PI_EDIT_GUARD_DEBUG=1`
+ * (or `true` / `yes`). When enabled, the log writes sha + length + 200-char
+ * preview by default; combine with `PI_EDIT_GUARD_LOG_FULL=1` and
+ * `PI_EDIT_GUARD_LOG_SNAPSHOTS=1` for richer output.
  */
 export function isDebugEnabled(): boolean {
-  return !isEnvFalsy('PI_EDIT_GUARD_DEBUG');
+  return _getBoolEnv('PI_EDIT_GUARD_DEBUG');
 }
 
 /**
  * When true, `describeText` returns the full content in `preview` instead
- * of the 200-char preview + `[+N chars]` marker. Default ON; set to `0`
- * to redact to sha + length + preview only.
+ * of the 200-char preview + `[+N chars]` marker. Default OFF — the log
+ * never contains full file/edit bodies unless you opt in with
+ * `PI_EDIT_GUARD_LOG_FULL=1`.
  */
 export function shouldLogFull(): boolean {
-  return !isEnvFalsy('PI_EDIT_GUARD_LOG_FULL');
+  return _getBoolEnv('PI_EDIT_GUARD_LOG_FULL');
 }
 
 /**
  * When true, `saveFileSnapshot` writes the file content verbatim to
  * `<log-dir>/snapshots/<sha>.orig` so it can be inspected after the fact.
- * Dedupe by sha. Capped by count and bytes. Default ON; set to `0` to
- * skip snapshots and keep only the structured log.
+ * Dedupe by sha. Capped by count and bytes. Default OFF — no snapshot
+ * directory is created unless you opt in with `PI_EDIT_GUARD_LOG_SNAPSHOTS=1`.
  */
 export function shouldSaveSnapshots(): boolean {
-  return !isEnvFalsy('PI_EDIT_GUARD_LOG_SNAPSHOTS');
+  return _getBoolEnv('PI_EDIT_GUARD_LOG_SNAPSHOTS');
 }
 
 

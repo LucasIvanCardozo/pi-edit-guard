@@ -13,7 +13,10 @@ Fixes the most common LLM failure mode in code editing: the model counts spaces 
 
 ## Status
 
-- **v0.12.0 in development** — formatter safety net integrated (adapted from pi-code-formatter by losnappas, MIT)
+- **v0.13.0** — debug logging now opt-in (no /tmp files by default); snapshots grouped per-pid under `<log-dir>/<basename>/snapshots/`
+- **v0.12.2** — fix cascade empty line rule + trust-mode autofix
+- **v0.12.1** — debug log table: `formatterMatched` replaces `pass-formatter-trust`
+- **v0.12.0** — formatter safety net integrated (adapted from pi-code-formatter by losnappas, MIT)
 - Install: `pi install npm:@lucascardozo/pi-edit-guard`
 - Repo: https://github.com/LucasIvanCardozo/pi-edit-guard
 - License: MIT
@@ -221,16 +224,16 @@ PI_EDIT_GUARD_THRESHOLD=0.85 pi  # lower = more permissive fuzzy matching
 
 Default: `0.90`. Lower if you want the guard to catch more typos; higher if you want stricter matches only.
 
-Debug logging is **ON by default** — every cascade invocation writes one NDJSON line with full `oldText` / `newText` content plus a verbatim file snapshot under `<log-dir>/snapshots/<sha>.orig`. To silence:
+Debug logging is **OFF by default** — no files are written to `/tmp` unless you opt in. To capture a session for triage:
 
 ```bash
-PI_EDIT_GUARD_DEBUG=0 \                # silence the NDJSON log
-PI_EDIT_GUARD_LOG_FULL=0 \              # redact to sha + length + 200-char preview
-PI_EDIT_GUARD_LOG_SNAPSHOTS=0 \        # skip file snapshots
+PI_EDIT_GUARD_DEBUG=1 \                      # enable the NDJSON log (sha + length + 200-char preview)
+PI_EDIT_GUARD_LOG_FULL=1 \                   # log full oldText/newText content
+PI_EDIT_GUARD_LOG_SNAPSHOTS=1 \              # save verbatim file snapshots
 pi
 ```
 
-Log entries include `source` (`tool_call` | `tool_result`) and, on `tool_result` with `isError`, `nativeError` so we can see exactly what the model saw. See the README "Debug logging" section for the full triage workflow.
+The log goes to `/tmp/pi-edit-guard-<pid>.log` (override with `PI_EDIT_GUARD_LOG_PATH=...`) with one NDJSON line per cascade invocation. With `LOG_SNAPSHOTS=1`, snapshots go to `<dirname>/<basename-without-ext>/snapshots/<sha>.orig` (e.g. `/tmp/pi-edit-guard-<pid>/snapshots/<sha>.orig`). Log entries include `source` (`tool_call` | `tool_result`) and, on `tool_result` with `isError`, `nativeError` so we can see exactly what the model saw. See the README "Debug logging" section for the full triage workflow.
 
 ### Trust-formatter mode (v0.11.0 — opt-in)
 

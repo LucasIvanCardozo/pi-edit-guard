@@ -40,7 +40,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 
 import { getLogPath, isDebugEnabled, shouldLogFull, shouldSaveSnapshots } from './config.ts';
 
@@ -122,8 +122,19 @@ export type DebugEvent = {
   formatterDurationMs?: number;
 };
 
+/**
+ * Per-pid snapshot directory: `<dirname(log-path)>/<basename-without-ext>/snapshots`.
+ *
+ * Default log path `/tmp/pi-edit-guard-<pid>.log` → snapshots go to
+ * `/tmp/pi-edit-guard-<pid>/snapshots/`. Custom `PI_EDIT_GUARD_LOG_PATH=./foo.log`
+ * → snapshots go to `./foo/snapshots/`. Grouping per log keeps `rm -rf
+ * /tmp/pi-edit-guard-*` sufficient to clean up everything from a session.
+ */
 function snapshotsDir(): string {
-  return join(dirname(getLogPath()), 'snapshots');
+  const logPath = getLogPath();
+  const dir = dirname(logPath);
+  const base = basename(logPath, extname(logPath));
+  return join(dir, base, 'snapshots');
 }
 
 function shouldRotate(): boolean {
